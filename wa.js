@@ -138,7 +138,8 @@ async function connectToWhatsApp () {
         const buffer = Buffer.from(await apiRes.arrayBuffer())
 
         await sock.sendMessage(from, {
-          sticker: buffer
+          sticker: buffer,
+          mimetype: 'image/webp'
         })
         console.log(`✅ /brat terkirim ke ${from}`)
       } catch (e) {
