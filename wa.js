@@ -129,34 +129,19 @@ async function connectToWhatsApp () {
       try {
         await sock.sendMessage(from, { text: '⏳ Sedang download video TikTok...' })
 
-        const apiRes = await fetch(`https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(tiktokUrl)}`)
+        // Ganti pake endpoint TikWM
+        const apiRes = await fetch(`https://www.tikwm.com/api/?url=${tiktokUrl}`)
         const apiData = await apiRes.json()
         console.log('📥 /dd raw response:', JSON.stringify(apiData).slice(0, 500))
 
-        // Struktur asli: { status, data: { type, title, thumbnail, media: [{ quality, url }] } }
-        const d = apiData?.data || apiData?.result || apiData
-        let videoUrl = null
-
-        if (Array.isArray(d?.media) && d.media.length > 0) {
-          // Prioritaskan kualitas HD kalau ada, kalau nggak ambil yang pertama
-          const hd = d.media.find(m => /hd/i.test(m.quality || ''))
-          videoUrl = (hd || d.media[0])?.url
-        }
-
-        // Fallback ke kemungkinan struktur lain (jaga-jaga API berubah lagi)
-        videoUrl = videoUrl ||
-          d?.video?.no_watermark ||
-          d?.video?.noWatermark ||
-          d?.video?.play ||
-          d?.play ||
-          d?.download ||
-          d?.hd ||
-          d?.url
+        const d = apiData?.data
+        // Langsung tembak ke hdplay atau play
+        const videoUrl = d?.hdplay || d?.play
 
         if (!videoUrl) {
-          console.log('❌ /dd: field video tidak ditemukan di response di atas')
+          console.log('❌ /dd: field video tidak ditemukan')
           await sock.sendMessage(from, {
-            text: '❌ Gagal ambil link video (format response API berubah). Coba lagi nanti atau cek log server.'
+            text: '❌ Gagal ambil link video. Coba lagi nanti atau cek log server.'
           })
           return
         }
@@ -170,7 +155,7 @@ async function connectToWhatsApp () {
         if (!videoRes.ok) throw new Error(`Gagal download video (status ${videoRes.status})`)
         const buffer = Buffer.from(await videoRes.arrayBuffer())
 
-        const caption = d?.title || d?.desc || ''
+        const caption = d?.title || ''
         await sock.sendMessage(from, {
           video: buffer,
           mimetype: 'video/mp4',
