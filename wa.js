@@ -133,17 +133,25 @@ async function connectToWhatsApp () {
         const apiData = await apiRes.json()
         console.log('📥 /dd raw response:', JSON.stringify(apiData).slice(0, 500))
 
-        // API siputzx bisa balikin beberapa kemungkinan struktur, dicoba satu-satu
+        // Struktur asli: { status, data: { type, title, thumbnail, media: [{ quality, url }] } }
         const d = apiData?.data || apiData?.result || apiData
-        const videoUrl =
+        let videoUrl = null
+
+        if (Array.isArray(d?.media) && d.media.length > 0) {
+          // Prioritaskan kualitas HD kalau ada, kalau nggak ambil yang pertama
+          const hd = d.media.find(m => /hd/i.test(m.quality || ''))
+          videoUrl = (hd || d.media[0])?.url
+        }
+
+        // Fallback ke kemungkinan struktur lain (jaga-jaga API berubah lagi)
+        videoUrl = videoUrl ||
           d?.video?.no_watermark ||
           d?.video?.noWatermark ||
           d?.video?.play ||
           d?.play ||
           d?.download ||
           d?.hd ||
-          d?.url ||
-          (Array.isArray(d?.video) ? d.video[0] : null)
+          d?.url
 
         if (!videoUrl) {
           console.log('❌ /dd: field video tidak ditemukan di response di atas')
@@ -153,7 +161,12 @@ async function connectToWhatsApp () {
           return
         }
 
-        const videoRes = await fetch(videoUrl)
+        const videoRes = await fetch(videoUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+            'Referer': 'https://www.tiktok.com/'
+          }
+        })
         if (!videoRes.ok) throw new Error(`Gagal download video (status ${videoRes.status})`)
         const buffer = Buffer.from(await videoRes.arrayBuffer())
 
@@ -235,4 +248,3 @@ async function connectToWhatsApp () {
 }
 
 connectToWhatsApp().catch(console.error)
-    
