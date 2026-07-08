@@ -119,6 +119,58 @@ async function connectToWhatsApp () {
 
     if (!text.trim()) return
 
+    // ── /dd {url} — download video TikTok, WA-only ────────
+    if (text.trim().toLowerCase().startsWith('/dd ')) {
+      const tiktokUrl = text.trim().split(' ').slice(1).join(' ').trim()
+      if (!tiktokUrl || !/tiktok\.com/.test(tiktokUrl)) {
+        await sock.sendMessage(from, { text: '⚠️ Format salah. Contoh: /dd https://vt.tiktok.com/xxxxx' })
+        return
+      }
+      try {
+        await sock.sendMessage(from, { text: '⏳ Sedang download video TikTok...' })
+
+        const apiRes = await fetch(`https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(tiktokUrl)}`)
+        const apiData = await apiRes.json()
+        console.log('📥 /dd raw response:', JSON.stringify(apiData).slice(0, 500))
+
+        // API siputzx bisa balikin beberapa kemungkinan struktur, dicoba satu-satu
+        const d = apiData?.data || apiData?.result || apiData
+        const videoUrl =
+          d?.video?.no_watermark ||
+          d?.video?.noWatermark ||
+          d?.video?.play ||
+          d?.play ||
+          d?.download ||
+          d?.hd ||
+          d?.url ||
+          (Array.isArray(d?.video) ? d.video[0] : null)
+
+        if (!videoUrl) {
+          console.log('❌ /dd: field video tidak ditemukan di response di atas')
+          await sock.sendMessage(from, {
+            text: '❌ Gagal ambil link video (format response API berubah). Coba lagi nanti atau cek log server.'
+          })
+          return
+        }
+
+        const videoRes = await fetch(videoUrl)
+        if (!videoRes.ok) throw new Error(`Gagal download video (status ${videoRes.status})`)
+        const buffer = Buffer.from(await videoRes.arrayBuffer())
+
+        const caption = d?.title || d?.desc || ''
+        await sock.sendMessage(from, {
+          video: buffer,
+          mimetype: 'video/mp4',
+          caption
+        })
+        console.log(`✅ /dd terkirim ke ${from}`)
+      } catch (e) {
+        console.error('❌ Error /dd:', e.message)
+        await sock.sendMessage(from, { text: '❌ Gagal download video: ' + e.message })
+      }
+      return
+    }
+
     // ── /ai {nama} — semua /ai dari WhatsApp lewat /wa-ai ──
     // Backend yang memutuskan: owner → global, lainnya → per-sesi
     if (text.trim().toLowerCase().startsWith('/ai ')) {
@@ -183,3 +235,4 @@ async function connectToWhatsApp () {
 }
 
 connectToWhatsApp().catch(console.error)
+    
