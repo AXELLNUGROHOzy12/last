@@ -1,0 +1,16 @@
+node_modules/
+wa_auth/
+
+# Runtime state (dibuat otomatis pas app jalan, jangan di-commit)
+token.json
+user.json
+seen_users.json
+self_mode.txt
+qr_current.png
+qr_current.txt
+
+# npm
+npm-debug.log*
+
+# OS
+.DS_Store

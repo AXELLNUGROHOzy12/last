@@ -1,0 +1,9 @@
+node_modules
+wa_auth
+npm-debug.log
+.git
+.gitignore
+qr_current.png
+qr_current.txt
+seen_users.json
+token.json
