@@ -129,22 +129,43 @@ async function connectToWhatsApp () {
       }
 
       try {
-        await sock.sendMessage(from, { text: '⏳ Sedang membuat stiker brat...' })
+        await sock.sendMessage(from, { text: '⏳ Sedang membuat brat...' })
 
         const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}&delay=500`
         const apiRes = await fetch(apiUrl)
         
         if (!apiRes.ok) throw new Error(`Gagal akses API (status ${apiRes.status})`)
+
+        // Cek tipe balasan dari API
+        const contentType = apiRes.headers.get('content-type') || ''
         const buffer = Buffer.from(await apiRes.arrayBuffer())
 
-        await sock.sendMessage(from, {
-          sticker: buffer,
-          mimetype: 'image/webp'
-        })
+        // 1. Kalo API ngereturn pesan error dalam bentuk JSON
+        if (contentType.includes('application/json')) {
+            const dataError = JSON.parse(buffer.toString())
+            console.log('❌ JSON /brat:', dataError)
+            await sock.sendMessage(from, { text: '❌ Gagal: API ngasih error (cek log server).' })
+            return
+        }
+
+        // 2. Kalo formatnya Video/MP4, jadikan auto-play GIF (mirip stiker animasi)
+        if (contentType.includes('video') || contentType.includes('mp4')) {
+            await sock.sendMessage(from, {
+                video: buffer,
+                gifPlayback: true,
+                caption: ' ' // Sengaja dikosongin biar bersih kayak stiker
+            })
+        } else {
+            // 3. Kalo ngereturn WebP, paksain kirim jadi stiker lagi (semoga tanpa EXIF bisa tembus)
+            await sock.sendMessage(from, {
+                sticker: buffer
+            })
+        }
+
         console.log(`✅ /brat terkirim ke ${from}`)
       } catch (e) {
         console.error('❌ Error /brat:', e.message)
-        await sock.sendMessage(from, { text: '❌ Gagal bikin stiker brat: ' + e.message })
+        await sock.sendMessage(from, { text: '❌ Gagal bikin brat: ' + e.message })
       }
       return
     }
