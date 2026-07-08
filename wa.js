@@ -7,7 +7,9 @@ import { Boom } from '@hapi/boom'
 import { writeFile } from 'fs/promises'
 import QRCode from 'qrcode'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
-import ytSearch from 'yt-search'
+import SoundCloud from 'soundcloud-scraper'
+
+const scClient = new SoundCloud.Client()
 
 const PORT       = process.env.PORT || 8000
 const BACKEND    = `http://localhost:${PORT}`
@@ -116,36 +118,34 @@ async function connectToWhatsApp () {
 
     if (!text.trim()) return
 
-    // ── /play {judul lagu} ──
-    if (text.trim().toLowerCase().startsWith('/play ')) {
-      const query = text.trim().substring(6).trim()
+    // ── /sc {judul lagu} — cari & download SoundCloud ──
+    if (text.trim().toLowerCase().startsWith('/sc ')) {
+      const query = text.trim().substring(4).trim()
       if (!query) {
-        await sock.sendMessage(from, { text: '⚠️ Judulnya mana? Contoh: /play celengan rindu' })
+        await sock.sendMessage(from, { text: '⚠️ Judulnya mana? Contoh: /sc celengan rindu' })
         return
       }
 
       try {
-        await sock.sendMessage(from, { text: '🔍 Nyari lagu...' })
-        const searchResult = await ytSearch(query)
-        const video = searchResult.videos.length > 0 ? searchResult.videos[0] : null
-        
-        if (!video) {
-          await sock.sendMessage(from, { text: '❌ Gak ketemu bro.' })
+        await sock.sendMessage(from, { text: '🔍 Sedang mencari di SoundCloud...' })
+
+        const searchResult = await scClient.search(query, 'track')
+        if (!searchResult || searchResult.length === 0) {
+          await sock.sendMessage(from, { text: '❌ Lagu gak ketemu bro.' })
           return
         }
 
-        await sock.sendMessage(from, { text: `🎶 Ketemu: *${video.title}*\n⏳ Download...` })
+        const track = searchResult[0]
+        await sock.sendMessage(from, { text: `🎶 Ketemu: *${track.title}*\n⏳ Download...` })
 
-        const apiUrl = `https://itzpire.com/download/youtube?url=${encodeURIComponent(video.url)}`
-        const apiRes = await fetch(apiUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-        })
+        const apiUrl = `https://api.siputzx.my.id/api/d/soundcloud?url=${encodeURIComponent(track.url)}`
+        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
         
         if (!apiRes.ok) throw new Error(`API error (${apiRes.status})`)
         const apiData = await apiRes.json()
 
-        const audioUrl = apiData?.data?.download?.audio || apiData?.data?.audio
-        if (!audioUrl) throw new Error('Gagal dapet link dari Itzpire.')
+        const audioUrl = apiData?.data?.download || apiData?.data?.url || apiData?.url
+        if (!audioUrl) throw new Error('Gagal dapet link dari API.')
 
         const audioRes = await fetch(audioUrl)
         const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
@@ -156,9 +156,46 @@ async function connectToWhatsApp () {
           ptt: false 
         }, { quoted: msg })
 
-        console.log(`✅ /play terkirim ke ${from} (${video.title})`)
+        console.log(`✅ /sc terkirim ke ${from} (${track.title})`)
       } catch (e) {
-        console.error('❌ Error /play:', e.message)
+        console.error('❌ Error /sc:', e.message)
+        await sock.sendMessage(from, { text: '❌ Gagal: ' + e.message })
+      }
+      return
+    }
+
+    // ── /spotify {link} ──
+    if (text.trim().toLowerCase().startsWith('/spotify ')) {
+      const url = text.trim().split(' ')[1]
+      if (!url || !url.includes('spotify.com')) {
+        await sock.sendMessage(from, { text: '⚠️ Linknya mana? Contoh: /spotify https://open.spotify.com/track/xxxxx' })
+        return
+      }
+
+      try {
+        await sock.sendMessage(from, { text: '⏳ Sedang menarik lagu dari Spotify...' })
+        
+        const apiUrl = `https://api.siputzx.my.id/api/d/spotify?url=${encodeURIComponent(url)}`
+        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+        
+        if (!apiRes.ok) throw new Error(`API error (${apiRes.status})`)
+        const apiData = await apiRes.json()
+
+        const audioUrl = apiData?.data?.download || apiData?.data?.url || apiData?.url 
+        if (!audioUrl) throw new Error('Gagal dapet link audio dari API.')
+
+        const audioRes = await fetch(audioUrl)
+        const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
+
+        await sock.sendMessage(from, {
+          audio: audioBuffer,
+          mimetype: 'audio/mp4',
+          ptt: false 
+        }, { quoted: msg })
+
+        console.log(`✅ /spotify terkirim ke ${from}`)
+      } catch (e) {
+        console.error('❌ Error /spotify:', e.message)
         await sock.sendMessage(from, { text: '❌ Gagal muter lagu: ' + e.message })
       }
       return
@@ -175,9 +212,7 @@ async function connectToWhatsApp () {
       try {
         await sock.sendMessage(from, { text: '⏳ Bikin stiker brat...' })
         const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}`
-        const apiRes = await fetch(apiUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0' }
-        })
+        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
         
         if (!apiRes.ok) throw new Error(`API error`)
         const buffer = Buffer.from(await apiRes.arrayBuffer())
