@@ -6,6 +6,7 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom'
 import { writeFile } from 'fs/promises'
 import QRCode from 'qrcode'
+import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 
 const PORT       = process.env.PORT || 8000
 const BACKEND    = `http://localhost:${PORT}`
@@ -129,38 +130,46 @@ async function connectToWhatsApp () {
       }
 
       try {
-        await sock.sendMessage(from, { text: '⏳ Sedang membuat brat...' })
+        await sock.sendMessage(from, { text: '⏳ Sedang membuat stiker brat...' })
 
-        const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}&delay=500`
-        const apiRes = await fetch(apiUrl)
+        // Hit API dengan User-Agent supaya nggak dikira bot aneh-aneh
+        const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}`
+        const apiRes = await fetch(apiUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36'
+          }
+        })
         
         if (!apiRes.ok) throw new Error(`Gagal akses API (status ${apiRes.status})`)
 
-        // Cek tipe balasan dari API
-        const contentType = apiRes.headers.get('content-type') || ''
         const buffer = Buffer.from(await apiRes.arrayBuffer())
 
-        // 1. Kalo API ngereturn pesan error dalam bentuk JSON
-        if (contentType.includes('application/json')) {
-            const dataError = JSON.parse(buffer.toString())
-            console.log('❌ JSON /brat:', dataError)
-            await sock.sendMessage(from, { text: '❌ Gagal: API ngasih error (cek log server).' })
+        // Cek kalo API ngasih error format JSON
+        try {
+          const checkJson = JSON.parse(buffer.toString())
+          if (checkJson) {
+            console.log('❌ JSON /brat:', checkJson)
+            await sock.sendMessage(from, { text: '❌ API lagi error nih bro, coba bentar lagi.' })
             return
+          }
+        } catch (e) {
+          // Kalo masuk sini berarti beneran gambar, gaskan convert!
         }
 
-        // 2. Kalo formatnya Video/MP4, jadikan auto-play GIF (mirip stiker animasi)
-        if (contentType.includes('video') || contentType.includes('mp4')) {
-            await sock.sendMessage(from, {
-                video: buffer,
-                gifPlayback: true,
-                caption: ' ' // Sengaja dikosongin biar bersih kayak stiker
-            })
-        } else {
-            // 3. Kalo ngereturn WebP, paksain kirim jadi stiker lagi (semoga tanpa EXIF bisa tembus)
-            await sock.sendMessage(from, {
-                sticker: buffer
-            })
-        }
+        // Bikin metadata stiker pake wa-sticker-formatter
+        const stickerMeta = new Sticker(buffer, {
+            pack: 'Brat Sticker',
+            author: OWNER_NAME,
+            type: StickerTypes.FULL,
+            quality: 50
+        })
+
+        const finalSticker = await stickerMeta.toBuffer()
+
+        // Kirim stikernya ke chat
+        await sock.sendMessage(from, {
+            sticker: finalSticker
+        })
 
         console.log(`✅ /brat terkirim ke ${from}`)
       } catch (e) {
@@ -282,3 +291,4 @@ async function connectToWhatsApp () {
 }
 
 connectToWhatsApp().catch(console.error)
+        
