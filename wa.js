@@ -7,6 +7,8 @@ import { Boom } from '@hapi/boom'
 import { writeFile } from 'fs/promises'
 import QRCode from 'qrcode'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
+import ytSearch from 'yt-search'
+import ytdl from '@distube/ytdl-core'
 
 const PORT       = process.env.PORT || 8000
 const BACKEND    = `http://localhost:${PORT}`
@@ -120,6 +122,51 @@ async function connectToWhatsApp () {
 
     if (!text.trim()) return
 
+    // ── /play {judul lagu} — cari dan download MP3 ──────────────────
+    if (text.trim().toLowerCase().startsWith('/play ')) {
+      const query = text.trim().substring(6).trim()
+      
+      if (!query) {
+        await sock.sendMessage(from, { text: '⚠️ Judul lagunya mana? Contoh: /play celengan rindu' })
+        return
+      }
+
+      try {
+        await sock.sendMessage(from, { text: '🔍 Sedang mencari lagu...' })
+
+        const searchResult = await ytSearch(query)
+        const video = searchResult.videos.length > 0 ? searchResult.videos[0] : null
+        
+        if (!video) {
+          await sock.sendMessage(from, { text: '❌ Lagu gak ketemu bro.' })
+          return
+        }
+
+        await sock.sendMessage(from, { text: `🎶 Ketemu nih: *${video.title}*\n⏳ Sedang memproses audio...` })
+
+        const audioBuffer = await new Promise((resolve, reject) => {
+          const chunks = []
+          const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' })
+          
+          stream.on('data', chunk => chunks.push(chunk))
+          stream.on('end', () => resolve(Buffer.concat(chunks)))
+          stream.on('error', err => reject(err))
+        })
+
+        await sock.sendMessage(from, {
+          audio: audioBuffer,
+          mimetype: 'audio/mp4', 
+          ptt: false 
+        }, { quoted: msg })
+
+        console.log(`✅ /play terkirim ke ${from} (Judul: ${video.title})`)
+      } catch (e) {
+        console.error('❌ Error /play:', e.message)
+        await sock.sendMessage(from, { text: '❌ Gagal muter lagu: ' + e.message })
+      }
+      return
+    }
+
     // ── /brat {teks} — bikin stiker brat ──────────────────
     if (text.trim().toLowerCase().startsWith('/brat ')) {
       const bratText = text.trim().substring(6).trim()
@@ -132,11 +179,10 @@ async function connectToWhatsApp () {
       try {
         await sock.sendMessage(from, { text: '⏳ Sedang membuat stiker brat...' })
 
-        // Hit API dengan User-Agent supaya nggak dikira bot aneh-aneh
         const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}`
         const apiRes = await fetch(apiUrl, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         })
         
@@ -144,7 +190,6 @@ async function connectToWhatsApp () {
 
         const buffer = Buffer.from(await apiRes.arrayBuffer())
 
-        // Cek kalo API ngasih error format JSON
         try {
           const checkJson = JSON.parse(buffer.toString())
           if (checkJson) {
@@ -153,10 +198,9 @@ async function connectToWhatsApp () {
             return
           }
         } catch (e) {
-          // Kalo masuk sini berarti beneran gambar, gaskan convert!
+          // Kalo masuk sini berarti aman (gambar)
         }
 
-        // Bikin metadata stiker pake wa-sticker-formatter
         const stickerMeta = new Sticker(buffer, {
             pack: 'Brat Sticker',
             author: OWNER_NAME,
@@ -166,7 +210,6 @@ async function connectToWhatsApp () {
 
         const finalSticker = await stickerMeta.toBuffer()
 
-        // Kirim stikernya ke chat
         await sock.sendMessage(from, {
             sticker: finalSticker
         })
@@ -189,7 +232,6 @@ async function connectToWhatsApp () {
       try {
         await sock.sendMessage(from, { text: '⏳ Sedang download video TikTok...' })
 
-        // Pake endpoint TikWM
         const apiRes = await fetch(`https://www.tikwm.com/api/?url=${tiktokUrl}`)
         const apiData = await apiRes.json()
         console.log('📥 /dd raw response:', JSON.stringify(apiData).slice(0, 500))
@@ -256,7 +298,6 @@ async function connectToWhatsApp () {
       return
     }
 
-    // Kalau self mode aktif, abaikan pesan dari grup
     if (selfMode && isGroup) return
 
     // ── Sambutan pertama kali chat ─────────────────────────
@@ -291,4 +332,3 @@ async function connectToWhatsApp () {
 }
 
 connectToWhatsApp().catch(console.error)
-        
