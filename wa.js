@@ -119,6 +119,35 @@ async function connectToWhatsApp () {
 
     if (!text.trim()) return
 
+    // ── /brat {teks} — bikin stiker brat ──────────────────
+    if (text.trim().toLowerCase().startsWith('/brat ')) {
+      const bratText = text.trim().substring(6).trim()
+      
+      if (!bratText) {
+        await sock.sendMessage(from, { text: '⚠️ Teksnya mana? Contoh: /brat ampun sepuh' })
+        return
+      }
+
+      try {
+        await sock.sendMessage(from, { text: '⏳ Sedang membuat stiker brat...' })
+
+        const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}&delay=500`
+        const apiRes = await fetch(apiUrl)
+        
+        if (!apiRes.ok) throw new Error(`Gagal akses API (status ${apiRes.status})`)
+        const buffer = Buffer.from(await apiRes.arrayBuffer())
+
+        await sock.sendMessage(from, {
+          sticker: buffer
+        })
+        console.log(`✅ /brat terkirim ke ${from}`)
+      } catch (e) {
+        console.error('❌ Error /brat:', e.message)
+        await sock.sendMessage(from, { text: '❌ Gagal bikin stiker brat: ' + e.message })
+      }
+      return
+    }
+
     // ── /dd {url} — download video TikTok, WA-only ────────
     if (text.trim().toLowerCase().startsWith('/dd ')) {
       const tiktokUrl = text.trim().split(' ').slice(1).join(' ').trim()
@@ -129,13 +158,12 @@ async function connectToWhatsApp () {
       try {
         await sock.sendMessage(from, { text: '⏳ Sedang download video TikTok...' })
 
-        // Ganti pake endpoint TikWM
+        // Pake endpoint TikWM
         const apiRes = await fetch(`https://www.tikwm.com/api/?url=${tiktokUrl}`)
         const apiData = await apiRes.json()
         console.log('📥 /dd raw response:', JSON.stringify(apiData).slice(0, 500))
 
         const d = apiData?.data
-        // Langsung tembak ke hdplay atau play
         const videoUrl = d?.hdplay || d?.play
 
         if (!videoUrl) {
@@ -170,7 +198,6 @@ async function connectToWhatsApp () {
     }
 
     // ── /ai {nama} — semua /ai dari WhatsApp lewat /wa-ai ──
-    // Backend yang memutuskan: owner → global, lainnya → per-sesi
     if (text.trim().toLowerCase().startsWith('/ai ')) {
       const provider = text.trim().split(' ').slice(1).join(' ').trim().toLowerCase()
       const fromNumber = from.split('@')[0].split(':')[0]
