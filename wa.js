@@ -1,74 +1,43 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion
-} from '@whiskeysockets/baileys'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
-import { writeFile } from 'fs/promises'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 import QRCode from 'qrcode'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import SoundCloud from 'soundcloud-scraper'
 
 const scClient = new SoundCloud.Client()
 
-const PORT       = process.env.PORT || 8000
-const BACKEND    = `http://localhost:${PORT}`
-const QR_FILE    = 'qr_current.txt'
-const QR_IMAGE   = 'qr_current.png'
-const SELF_FILE  = 'self_mode.txt'
-const SEEN_FILE  = 'seen_users.json'
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
+const PORT = process.env.PORT || 8000
+const BACKEND = process.env.BACKEND_URL || `http://localhost:${PORT}`
 const OWNER_NAME = 'exel'
 
-// ── Tunggu back.py siap ──
-async function waitForBackend(maxRetries = 15, delayMs = 1000) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const r = await fetch(`${BACKEND}/status`)
-      if (r.ok) return true
-    } catch {}
-    await new Promise(res => setTimeout(res, delayMs))
+// ── Sistem Auto-Load Plugin ──
+const plugins = {}
+const pluginDir = path.join(__dirname, 'plugins')
+if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir)
+
+const loadPlugins = async () => {
+  const files = fs.readdirSync(pluginDir).filter(f => f.endsWith('.js'))
+  for (const file of files) {
+    const pluginUrl = pathToFileURL(path.join(pluginDir, file)).href
+    const plugin = await import(pluginUrl)
+    if (plugin.default && plugin.default.command) {
+      plugin.default.command.forEach(cmd => {
+        plugins[cmd] = plugin.default.handler
+      })
+    }
   }
-  return false
+  console.log(`🔌 Memuat ${Object.keys(plugins).length} command dari plugins!`)
 }
-await waitForBackend()
+await loadPlugins()
 
-// ── Setup Config ──
-const fs = (await import('fs'))
-let OWNER_NUMBER = '628772703519'
-try {
-  const r = await fetch(`${BACKEND}/status`)
-  const d = await r.json()
-  if (d.config?.owner_wa) OWNER_NUMBER = d.config.owner_wa
-} catch {}
-console.log(`👑 Owner WA number: ${OWNER_NUMBER}`)
-
-let selfMode = false
-try { selfMode = fs.readFileSync(SELF_FILE, 'utf-8').trim() === '1' } catch {}
-
-let seenUsers = new Set()
-try { seenUsers = new Set(JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'))) } catch {}
-
-async function setSelfMode(val) {
-  selfMode = val
-  await writeFile(SELF_FILE, val ? '1' : '0', 'utf-8')
-}
-
-async function markSeen(jid) {
-  seenUsers.add(jid)
-  await writeFile(SEEN_FILE, JSON.stringify([...seenUsers]), 'utf-8')
-}
-
-function buildWelcome(aiName) {
-  return (
-    `Halo! 👋 Selamat datang!\n\n` +
-    `Perkenalkan, aku *${aiName}* — asisten AI yang siap membantu kamu.\n\n` +
-    `Bot ini dibuat oleh *${OWNER_NAME}* (wa.me/${OWNER_NUMBER}).\n\n` +
-    `Silakan mulai chat! 😊`
-  )
-}
-
-async function connectToWhatsApp () {
+// ── Main Bot Connection ──
+async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('wa_auth')
   const { version } = await fetchLatestBaileysVersion()
 
@@ -81,25 +50,15 @@ async function connectToWhatsApp () {
 
   sock.ev.on('connection.update', async update => {
     const { connection, lastDisconnect, qr } = update
-
     if (qr) {
-      await writeFile(QR_FILE, qr, 'utf-8')
-      await QRCode.toFile(QR_IMAGE, qr, { width: 300, margin: 2 })
+      await QRCode.toFile('qr_current.png', qr, { width: 300, margin: 2 })
       console.log('📱 QR baru tersedia')
     }
-
     if (connection === 'close') {
       const code = new Boom(lastDisconnect?.error)?.output?.statusCode
-      const shouldReconnect = code !== DisconnectReason.loggedOut
-      console.log(`Koneksi terputus (kode ${code})${shouldReconnect ? ' — reconnecting...' : ' — logged out'}`)
-      if (shouldReconnect) connectToWhatsApp()
-      else await writeFile(QR_FILE, 'loggedout', 'utf-8')
+      if (code !== DisconnectReason.loggedOut) connectToWhatsApp()
     }
-
-    if (connection === 'open') {
-      await writeFile(QR_FILE, 'connected', 'utf-8')
-      console.log('✅ WhatsApp terhubung!')
-    }
+    if (connection === 'open') console.log('✅ WhatsApp terhubung!')
   })
 
   sock.ev.on('creds.update', saveCreds)
@@ -109,208 +68,99 @@ async function connectToWhatsApp () {
     const msg = messages[0]
     if (!msg?.message || msg.key.fromMe) return
 
-    const from    = msg.key.remoteJid
-    const isGroup = from.endsWith('@g.us')
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption || ''
-
+    const from = msg.key.remoteJid
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
     if (!text.trim()) return
 
-    // ── /sc {judul lagu} — cari & download SoundCloud ──
-    if (text.trim().toLowerCase().startsWith('/sc ')) {
+    // Parse command
+    const args = text.trim().split(/ +/)
+    const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
+
+    // 1. Eksekusi Plugin
+    if (plugins[command]) {
+      try {
+        await plugins[command](msg, sock, args)
+        return
+      } catch (e) {
+        console.error('❌ Error Plugin:', e)
+        await sock.sendMessage(from, { text: '❌ Error plugin: ' + e.message })
+      }
+    }
+
+    // 2. Fitur Bawaan
+    const cmdFull = text.trim().toLowerCase()
+    
+    // ── /sc (SoundCloud) ──
+    if (cmdFull.startsWith('/sc ')) {
       const query = text.trim().substring(4).trim()
-      if (!query) {
-        await sock.sendMessage(from, { text: '⚠️ Judulnya mana? Contoh: /sc celengan rindu' })
-        return
-      }
-
       try {
-        await sock.sendMessage(from, { text: '🔍 Sedang mencari di SoundCloud...' })
-
+        await sock.sendMessage(from, { text: '🔍 Mencari di SoundCloud...' })
         const searchResult = await scClient.search(query, 'track')
-        if (!searchResult || searchResult.length === 0) {
-          await sock.sendMessage(from, { text: '❌ Lagu gak ketemu bro.' })
-          return
-        }
-
+        if (!searchResult.length) return await sock.sendMessage(from, { text: '❌ Lagu ga ketemu.' })
+        
         const track = searchResult[0]
-        await sock.sendMessage(from, { text: `🎶 Ketemu: *${track.title}*\n⏳ Download...` })
-
-        const apiUrl = `https://api.siputzx.my.id/api/d/soundcloud?url=${encodeURIComponent(track.url)}`
-        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        
-        if (!apiRes.ok) throw new Error(`API error (${apiRes.status})`)
+        const apiRes = await fetch(`https://api.siputzx.my.id/api/d/soundcloud?url=${encodeURIComponent(track.url)}`)
         const apiData = await apiRes.json()
-
-        const audioUrl = apiData?.data?.download || apiData?.data?.url || apiData?.url
-        if (!audioUrl) throw new Error('Gagal dapet link dari API.')
-
-        const audioRes = await fetch(audioUrl)
-        const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
-
-        await sock.sendMessage(from, {
-          audio: audioBuffer,
-          mimetype: 'audio/mp4',
-          ptt: false 
-        }, { quoted: msg })
-
-        console.log(`✅ /sc terkirim ke ${from} (${track.title})`)
-      } catch (e) {
-        console.error('❌ Error /sc:', e.message)
-        await sock.sendMessage(from, { text: '❌ Gagal: ' + e.message })
-      }
-      return
-    }
-
-    // ── /spotify {link} ──
-    if (text.trim().toLowerCase().startsWith('/spotify ')) {
-      const url = text.trim().split(' ')[1]
-      if (!url || !url.includes('spotify.com')) {
-        await sock.sendMessage(from, { text: '⚠️ Linknya mana? Contoh: /spotify https://open.spotify.com/track/xxxxx' })
-        return
-      }
-
-      try {
-        await sock.sendMessage(from, { text: '⏳ Sedang menarik lagu dari Spotify...' })
+        const audioUrl = apiData?.data?.download || apiData?.url
         
-        const apiUrl = `https://api.siputzx.my.id/api/d/spotify?url=${encodeURIComponent(url)}`
-        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+        if (!audioUrl) throw new Error('Gagal dapet link.')
+        const audioBuffer = Buffer.from(await (await fetch(audioUrl)).arrayBuffer())
         
-        if (!apiRes.ok) throw new Error(`API error (${apiRes.status})`)
-        const apiData = await apiRes.json()
-
-        const audioUrl = apiData?.data?.download || apiData?.data?.url || apiData?.url 
-        if (!audioUrl) throw new Error('Gagal dapet link audio dari API.')
-
-        const audioRes = await fetch(audioUrl)
-        const audioBuffer = Buffer.from(await audioRes.arrayBuffer())
-
-        await sock.sendMessage(from, {
-          audio: audioBuffer,
-          mimetype: 'audio/mp4',
-          ptt: false 
-        }, { quoted: msg })
-
-        console.log(`✅ /spotify terkirim ke ${from}`)
-      } catch (e) {
-        console.error('❌ Error /spotify:', e.message)
-        await sock.sendMessage(from, { text: '❌ Gagal muter lagu: ' + e.message })
-      }
-      return
-    }
-
-    // ── /brat {teks} ──
-    if (text.trim().toLowerCase().startsWith('/brat ')) {
-      const bratText = text.trim().substring(6).trim()
-      if (!bratText) {
-        await sock.sendMessage(from, { text: '⚠️ Teksnya mana?' })
-        return
-      }
-
-      try {
-        await sock.sendMessage(from, { text: '⏳ Bikin stiker brat...' })
-        const apiUrl = `https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}`
-        const apiRes = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        
-        if (!apiRes.ok) throw new Error(`API error`)
-        const buffer = Buffer.from(await apiRes.arrayBuffer())
-
-        try {
-          if (JSON.parse(buffer.toString())) return await sock.sendMessage(from, { text: '❌ API error.' })
-        } catch (e) {}
-
-        const stickerMeta = new Sticker(buffer, {
-            pack: 'Brat Sticker',
-            author: OWNER_NAME,
-            type: StickerTypes.FULL,
-            quality: 50
-        })
-
-        await sock.sendMessage(from, { sticker: await stickerMeta.toBuffer() })
-        console.log(`✅ /brat terkirim`)
-      } catch (e) {
-        console.error('❌ Error /brat:', e.message)
-        await sock.sendMessage(from, { text: '❌ Gagal: ' + e.message })
-      }
-      return
-    }
-
-    // ── /dd {url} ──
-    if (text.trim().toLowerCase().startsWith('/dd ')) {
-      const tiktokUrl = text.trim().split(' ').slice(1).join(' ').trim()
-      if (!tiktokUrl || !/tiktok\.com/.test(tiktokUrl)) {
-        await sock.sendMessage(from, { text: '⚠️ Format salah.' })
-        return
-      }
-      try {
-        await sock.sendMessage(from, { text: '⏳ Download TikTok...' })
-        const apiRes = await fetch(`https://www.tikwm.com/api/?url=${tiktokUrl}`)
-        const apiData = await apiRes.json()
-        const videoUrl = apiData?.data?.hdplay || apiData?.data?.play
-
-        if (!videoUrl) return await sock.sendMessage(from, { text: '❌ Gagal dapet link.' })
-
-        const videoRes = await fetch(videoUrl, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tiktok.com/' }})
-        const buffer = Buffer.from(await videoRes.arrayBuffer())
-
-        await sock.sendMessage(from, { video: buffer, mimetype: 'video/mp4', caption: apiData?.data?.title || '' })
-        console.log(`✅ /dd terkirim`)
-      } catch (e) {
-        await sock.sendMessage(from, { text: '❌ Gagal: ' + e.message })
-      }
-      return
-    }
-
-    // ── /ai ──
-    if (text.trim().toLowerCase().startsWith('/ai ')) {
-      const provider = text.trim().split(' ').slice(1).join(' ').trim().toLowerCase()
-      const fromNumber = from.split('@')[0].split(':')[0]
-      try {
-        const res  = await fetch(`${BACKEND}/wa-ai`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: fromNumber, session_id: from, provider })
-        })
-        const data = await res.json()
-        await sock.sendMessage(from, { text: data.reply || data.error })
+        await sock.sendMessage(from, { audio: audioBuffer, mimetype: 'audio/mp4' }, { quoted: msg })
       } catch (e) {
         await sock.sendMessage(from, { text: '❌ Error: ' + e.message })
       }
       return
     }
 
-    // ── /self ──
-    if (text.trim().toLowerCase() === '/self') {
-      await setSelfMode(!selfMode)
-      await sock.sendMessage(from, { text: selfMode ? '✅ Self mode ON' : '🔓 Self mode OFF' })
+    // ── /spotify ──
+    if (cmdFull.startsWith('/spotify ')) {
+      const url = text.trim().split(' ')[1]
+      try {
+        await sock.sendMessage(from, { text: '⏳ Menarik lagu dari Spotify...' })
+        const apiRes = await fetch(`https://api.siputzx.my.id/api/d/spotify?url=${encodeURIComponent(url)}`)
+        const apiData = await apiRes.json()
+        const audioUrl = apiData?.data?.download || apiData?.url 
+        
+        if (!audioUrl) throw new Error('Gagal dapet link.')
+        const audioBuffer = Buffer.from(await (await fetch(audioUrl)).arrayBuffer())
+        
+        await sock.sendMessage(from, { audio: audioBuffer, mimetype: 'audio/mp4' }, { quoted: msg })
+      } catch (e) {
+        await sock.sendMessage(from, { text: '❌ Error: ' + e.message })
+      }
       return
     }
 
-    if (selfMode && isGroup) return
-
-    // ── Sambutan & Chatbot ──
-    if (!seenUsers.has(from)) {
-      await markSeen(from)
+    // ── /brat ──
+    if (cmdFull.startsWith('/brat ')) {
+      const bratText = text.trim().substring(6).trim()
       try {
-        const cfgRes  = await fetch(`${BACKEND}/status`)
-        const cfgData = await cfgRes.json()
-        await sock.sendMessage(from, { text: buildWelcome(cfgData.config?.nama_ai || 'Nova AI') })
-      } catch {
-        await sock.sendMessage(from, { text: buildWelcome('Nova AI') })
+        const apiRes = await fetch(`https://api.siputzx.my.id/api/m/brat?text=${encodeURIComponent(bratText)}`)
+        const buffer = Buffer.from(await apiRes.arrayBuffer())
+        const stickerMeta = new Sticker(buffer, { pack: 'Brat', author: OWNER_NAME, type: StickerTypes.FULL })
+        await sock.sendMessage(from, { sticker: await stickerMeta.toBuffer() })
+      } catch (e) {
+        await sock.sendMessage(from, { text: '❌ Gagal bikin stiker.' })
       }
+      return
     }
 
-    try {
-      const res = await fetch(`${BACKEND}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: from, message: text })
-      })
-      const data = await res.json()
-      await sock.sendMessage(from, { text: data.reply || data.error || '⚠️ Gagal' })
-    } catch {}
+    // ── /dd (TikTok) ──
+    if (cmdFull.startsWith('/dd ')) {
+      const tiktokUrl = text.trim().split(' ')[1]
+      try {
+        const apiRes = await fetch(`https://www.tikwm.com/api/?url=${tiktokUrl}`)
+        const apiData = await apiRes.json()
+        const videoUrl = apiData?.data?.hdplay || apiData?.data?.play
+        if (!videoUrl) throw new Error('Ga dapet video.')
+        const buffer = Buffer.from(await (await fetch(videoUrl)).arrayBuffer())
+        await sock.sendMessage(from, { video: buffer, mimetype: 'video/mp4' })
+      } catch (e) {
+        await sock.sendMessage(from, { text: '❌ Error: ' + e.message })
+      }
+      return
+    }
   })
 }
 
