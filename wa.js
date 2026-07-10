@@ -15,30 +15,12 @@ const __dirname = path.dirname(__filename)
 
 const PORT = process.env.PORT || 8000
 const BACKEND = process.env.BACKEND_URL || `http://localhost:${PORT}`
-
-// ── BACA CONFIG.JSON LOKAL LANGSUNG ──
-const configPath = path.join(__dirname, 'config.json')
-let configData = {}
-let OWNER_NUMBERS = []
-let OWNER_NAME = 'exel'
-
-try {
-  configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
-  // Tarik langsung dari config.json lu
-  if (configData.owner_wa) OWNER_NUMBERS.push(String(configData.owner_wa).replace(/[^0-9]/g, ''))
-  if (configData.owner_lid) OWNER_NUMBERS.push(String(configData.owner_lid).replace(/[^0-9]/g, ''))
-  if (configData.nama_user) OWNER_NAME = configData.nama_user
-  console.log('✅ Config lokal berhasil dibaca! VIP Akses:', OWNER_NUMBERS)
-} catch (e) {
-  console.log('⚠️ Gagal baca config.json lokal, pake backup hardcode...')
-  OWNER_NUMBERS = ['628772703519', '264643620647015']
-}
+const OWNER_NAME = 'exel'
 
 const QR_FILE = 'qr_current.txt'
 const QR_IMAGE = 'qr_current.png'
 const SELF_FILE = 'self_mode.txt'
 const SEEN_FILE = 'seen_users.json'
-const DS_FILE = 'ds_mode.txt'
 
 // ── Tunggu Backend Siap ──
 async function waitForBackend(maxRetries = 15, delayMs = 1000) {
@@ -53,11 +35,17 @@ async function waitForBackend(maxRetries = 15, delayMs = 1000) {
 }
 await waitForBackend()
 
+// ── Setup Config & State ──
+let OWNER_NUMBER = '628772703519'
+try {
+  const r = await fetch(`${BACKEND}/status`)
+  const d = await r.json()
+  if (d.config?.owner_wa) OWNER_NUMBER = d.config.owner_wa
+} catch {}
+console.log(`👑 Owner WA number: ${OWNER_NUMBER}`)
+
 let selfMode = false
 try { selfMode = fs.readFileSync(SELF_FILE, 'utf-8').trim() === '1' } catch {}
-
-let dsMode = false
-try { dsMode = fs.readFileSync(DS_FILE, 'utf-8').trim() === '1' } catch {}
 
 let seenUsers = new Set()
 try { seenUsers = new Set(JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'))) } catch {}
@@ -65,11 +53,6 @@ try { seenUsers = new Set(JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'))) } cat
 async function setSelfMode(val) {
   selfMode = val
   await writeFile(SELF_FILE, val ? '1' : '0', 'utf-8')
-}
-
-async function setDsMode(val) {
-  dsMode = val
-  await writeFile(DS_FILE, val ? '1' : '0', 'utf-8')
 }
 
 async function markSeen(jid) {
@@ -81,7 +64,7 @@ function buildWelcome(aiName) {
   return (
     `Halo! 👋 Selamat datang!\n\n` +
     `Perkenalkan, aku *${aiName}* — asisten AI yang siap membantu kamu.\n\n` +
-    `Bot ini dibuat oleh *${OWNER_NAME}*.\n\n` +
+    `Bot ini dibuat oleh *${OWNER_NAME}* (wa.me/${OWNER_NUMBER}).\n\n` +
     `Silakan mulai chat! 😊`
   )
 }
@@ -143,44 +126,17 @@ async function connectToWhatsApp() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     const msg = messages[0]
-    if (!msg?.message) return 
+    if (!msg?.message || msg.key.fromMe) return
 
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
-    
-    // Ngambil raw ID pengirim dan ambil angkanya doang
-    const senderRaw = msg.key.participant || msg.key.remoteJid || ''
-    const senderClean = senderRaw.replace(/[^0-9]/g, '')
-    
-    // Cek apakah angka pengirim (WA/LID) nge-match sama yang ada di config.json
-    const isOwner = msg.key.fromMe || OWNER_NUMBERS.some(num => num && num.length > 5 && senderClean.includes(num))
-
-    if (msg.key.fromMe && !isOwner) return 
-
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
     if (!text.trim()) return
 
     const args = text.trim().split(/ +/)
     const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
-    const cmdFull = text.trim().toLowerCase()
 
-    // ── FITUR /DS (DISCONNECT) KHUSUS OWNER ──
-    if (command === 'ds') {
-      if (!isOwner) {
-        return await sock.sendMessage(from, { text: '❌ Lu sapa dawg? Cuma owner yang bisa pake command ini!' }, { quoted: msg })
-      }
-
-      await setDsMode(!dsMode)
-      await sock.sendMessage(from, { text: dsMode ? '🛑 *DISCONNECT MODE ON*\nSemua fitur dimatikan sementara (kecuali /ping).' : '✅ *DISCONNECT MODE OFF*\nSemua fitur kembali aktif mase!' }, { quoted: msg })
-      return
-    }
-
-    // Blokir semua aktivitas kalo DS Mode nyala (kecuali /ping)
-    if (dsMode && command !== 'ping') {
-      return 
-    }
-
-    // 1. Eksekusi Plugin Dulu
+    // 1. Eksekusi Plugin Dulu (Kalo command ada di folder plugins)
     if (plugins[command]) {
       try {
         await plugins[command](msg, sock, args)
@@ -191,8 +147,11 @@ async function connectToWhatsApp() {
       }
     }
 
-    // ── FITUR BAWAAN WA.JS ──
+    const cmdFull = text.trim().toLowerCase()
 
+    // ── FITUR BARU BAWAAN WA.JS ──
+
+    // /sc (SoundCloud)
     if (cmdFull.startsWith('/sc ')) {
       const query = text.trim().substring(4).trim()
       try {
@@ -216,6 +175,7 @@ async function connectToWhatsApp() {
       return
     }
 
+    // /spotify
     if (cmdFull.startsWith('/spotify ')) {
       const url = text.trim().split(' ')[1]
       try {
@@ -232,6 +192,7 @@ async function connectToWhatsApp() {
       return
     }
 
+    // /brat
     if (cmdFull.startsWith('/brat ')) {
       const bratText = text.trim().substring(6).trim()
       try {
@@ -245,6 +206,7 @@ async function connectToWhatsApp() {
       return
     }
 
+    // /dd (TikTok)
     if (cmdFull.startsWith('/dd ')) {
       const tiktokUrl = text.trim().split(' ')[1]
       try {
@@ -262,6 +224,7 @@ async function connectToWhatsApp() {
 
     // ── FITUR LAMA (BACKEND AI & FALLBACK) ──
 
+    // /ai (Chatbot Provider)
     if (cmdFull.startsWith('/ai ')) {
       const provider = text.trim().split(' ').slice(1).join(' ').trim().toLowerCase()
       const fromNumber = from.split('@')[0].split(':')[0]
@@ -279,8 +242,8 @@ async function connectToWhatsApp() {
       return
     }
 
+    // /self
     if (cmdFull === '/self') {
-      if (!isOwner) return await sock.sendMessage(from, { text: '❌ Fitur owner only dawg!' }, { quoted: msg })
       await setSelfMode(!selfMode)
       await sock.sendMessage(from, { text: selfMode ? '✅ Self mode ON' : '🔓 Self mode OFF' })
       return
@@ -288,17 +251,19 @@ async function connectToWhatsApp() {
 
     if (selfMode && isGroup) return
 
+    // Welcome Message (Buat User Baru)
     if (!seenUsers.has(from)) {
       await markSeen(from)
       try {
         const cfgRes  = await fetch(`${BACKEND}/status`)
         const cfgData = await cfgRes.json()
-        await sock.sendMessage(from, { text: buildWelcome(cfgData.config?.nama_ai || configData.nama_ai || 'Nova AI') })
+        await sock.sendMessage(from, { text: buildWelcome(cfgData.config?.nama_ai || 'Nova AI') })
       } catch {
         await sock.sendMessage(from, { text: buildWelcome('Nova AI') })
       }
     }
 
+    // Fallback Semua Chat/Command ke Backend AI (Reguler)
     try {
       const res = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
@@ -309,7 +274,9 @@ async function connectToWhatsApp() {
       if (data.reply || data.error) {
         await sock.sendMessage(from, { text: data.reply || data.error })
       }
-    } catch (e) {}
+    } catch (e) {
+      // Diem aja kalo error biar ga spam console pas chat biasa
+    }
   })
 }
 
