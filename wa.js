@@ -136,7 +136,7 @@ async function connectToWhatsApp() {
     const args = text.trim().split(/ +/)
     const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
 
-    // 1. Eksekusi Plugin Dulu
+    // 1. Eksekusi Plugin Dulu (Kalo command ada di folder plugins)
     if (plugins[command]) {
       try {
         await plugins[command](msg, sock, args)
@@ -149,7 +149,7 @@ async function connectToWhatsApp() {
 
     const cmdFull = text.trim().toLowerCase()
 
-    // ── FITUR BARU ──
+    // ── FITUR BARU BAWAAN WA.JS ──
 
     // /sc (SoundCloud)
     if (cmdFull.startsWith('/sc ')) {
@@ -263,7 +263,7 @@ async function connectToWhatsApp() {
       }
     }
 
-    // Fallback Semua Chat/Command ke Backend AI
+    // Fallback Semua Chat/Command ke Backend AI (Reguler)
     try {
       const res = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
