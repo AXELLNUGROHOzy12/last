@@ -135,10 +135,18 @@ async function connectToWhatsApp() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     const msg = messages[0]
-    if (!msg?.message || msg.key.fromMe) return
+    if (!msg?.message) return // Dihapus msg.key.fromMe dari sini biar owner tetep bisa ngasih command
 
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
+    
+    // Deteksi pengirim pake cara aman (bisa handle format @lid)
+    const sender = msg.key.participant || msg.key.remoteJid
+    const isOwner = sender.includes(OWNER_NUMBER) || msg.key.fromMe
+
+    // Jangan proses chat kalo botnya ngetik sendiri (kecuali bot itu sendiri adalah owner)
+    if (msg.key.fromMe && !isOwner) return 
+
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
     if (!text.trim()) return
 
@@ -146,8 +154,12 @@ async function connectToWhatsApp() {
     const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
     const cmdFull = text.trim().toLowerCase()
 
-    // ── FITUR /DS (DISCONNECT) ──
+    // ── FITUR /DS (DISCONNECT) KHUSUS OWNER ──
     if (command === 'ds') {
+      if (!isOwner) {
+        return await sock.sendMessage(from, { text: '❌ Lu sapa dawg? Cuma owner yang bisa pake command ini!' }, { quoted: msg })
+      }
+
       await setDsMode(!dsMode)
       await sock.sendMessage(from, { text: dsMode ? '🛑 *DISCONNECT MODE ON*\nSemua fitur dimatikan sementara (kecuali /ping).' : '✅ *DISCONNECT MODE OFF*\nSemua fitur kembali aktif mase!' }, { quoted: msg })
       return
@@ -264,6 +276,7 @@ async function connectToWhatsApp() {
 
     // /self
     if (cmdFull === '/self') {
+      if (!isOwner) return await sock.sendMessage(from, { text: '❌ Fitur owner only dawg!' }, { quoted: msg })
       await setSelfMode(!selfMode)
       await sock.sendMessage(from, { text: selfMode ? '✅ Self mode ON' : '🔓 Self mode OFF' })
       return
