@@ -21,6 +21,7 @@ const QR_FILE = 'qr_current.txt'
 const QR_IMAGE = 'qr_current.png'
 const SELF_FILE = 'self_mode.txt'
 const SEEN_FILE = 'seen_users.json'
+const DS_FILE = 'ds_mode.txt' // File buat nyimpen ingatan DS
 
 // ── Tunggu Backend Siap ──
 async function waitForBackend(maxRetries = 15, delayMs = 1000) {
@@ -47,12 +48,20 @@ console.log(`👑 Owner WA number: ${OWNER_NUMBER}`)
 let selfMode = false
 try { selfMode = fs.readFileSync(SELF_FILE, 'utf-8').trim() === '1' } catch {}
 
+let dsMode = false
+try { dsMode = fs.readFileSync(DS_FILE, 'utf-8').trim() === '1' } catch {}
+
 let seenUsers = new Set()
 try { seenUsers = new Set(JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'))) } catch {}
 
 async function setSelfMode(val) {
   selfMode = val
   await writeFile(SELF_FILE, val ? '1' : '0', 'utf-8')
+}
+
+async function setDsMode(val) {
+  dsMode = val
+  await writeFile(DS_FILE, val ? '1' : '0', 'utf-8')
 }
 
 async function markSeen(jid) {
@@ -135,8 +144,21 @@ async function connectToWhatsApp() {
 
     const args = text.trim().split(/ +/)
     const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
+    const cmdFull = text.trim().toLowerCase()
 
-    // 1. Eksekusi Plugin Dulu (Kalo command ada di folder plugins)
+    // ── FITUR /DS (DISCONNECT) ──
+    if (command === 'ds') {
+      await setDsMode(!dsMode)
+      await sock.sendMessage(from, { text: dsMode ? '🛑 *DISCONNECT MODE ON*\nSemua fitur dimatikan sementara (kecuali /ping).' : '✅ *DISCONNECT MODE OFF*\nSemua fitur kembali aktif mase!' }, { quoted: msg })
+      return
+    }
+
+    // Blokir semua aktivitas kalo DS Mode nyala (kecuali /ping)
+    if (dsMode && command !== 'ping') {
+      return // Diem aja, kaga ngeproses apapun
+    }
+
+    // 1. Eksekusi Plugin Dulu
     if (plugins[command]) {
       try {
         await plugins[command](msg, sock, args)
@@ -147,9 +169,7 @@ async function connectToWhatsApp() {
       }
     }
 
-    const cmdFull = text.trim().toLowerCase()
-
-    // ── FITUR BARU BAWAAN WA.JS ──
+    // ── FITUR BAWAAN WA.JS ──
 
     // /sc (SoundCloud)
     if (cmdFull.startsWith('/sc ')) {
@@ -263,7 +283,7 @@ async function connectToWhatsApp() {
       }
     }
 
-    // Fallback Semua Chat/Command ke Backend AI (Reguler)
+    // Fallback Semua Chat/Command ke Backend AI
     try {
       const res = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
@@ -275,7 +295,7 @@ async function connectToWhatsApp() {
         await sock.sendMessage(from, { text: data.reply || data.error })
       }
     } catch (e) {
-      // Diem aja kalo error biar ga spam console pas chat biasa
+      // Diem aja kalo error
     }
   })
 }
