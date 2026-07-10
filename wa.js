@@ -15,7 +15,24 @@ const __dirname = path.dirname(__filename)
 
 const PORT = process.env.PORT || 8000
 const BACKEND = process.env.BACKEND_URL || `http://localhost:${PORT}`
-const OWNER_NAME = 'exel'
+
+// ── BACA CONFIG.JSON LOKAL LANGSUNG ──
+const configPath = path.join(__dirname, 'config.json')
+let configData = {}
+let OWNER_NUMBERS = []
+let OWNER_NAME = 'exel'
+
+try {
+  configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+  // Tarik langsung dari config.json lu
+  if (configData.owner_wa) OWNER_NUMBERS.push(String(configData.owner_wa).replace(/[^0-9]/g, ''))
+  if (configData.owner_lid) OWNER_NUMBERS.push(String(configData.owner_lid).replace(/[^0-9]/g, ''))
+  if (configData.nama_user) OWNER_NAME = configData.nama_user
+  console.log('✅ Config lokal berhasil dibaca! VIP Akses:', OWNER_NUMBERS)
+} catch (e) {
+  console.log('⚠️ Gagal baca config.json lokal, pake backup hardcode...')
+  OWNER_NUMBERS = ['628772703519', '264643620647015']
+}
 
 const QR_FILE = 'qr_current.txt'
 const QR_IMAGE = 'qr_current.png'
@@ -35,22 +52,6 @@ async function waitForBackend(maxRetries = 15, delayMs = 1000) {
   return false
 }
 await waitForBackend()
-
-// ── Setup Config & State (Anti Jebol & Anti Ghost) ──
-let OWNER_NUMBERS = ['628772703519', '264643620647015']
-try {
-  const r = await fetch(`${BACKEND}/status`)
-  const d = await r.json()
-  
-  // Bersihin dan pastiin ga ada string kosong yang masuk
-  if (d.config?.owner_wa && String(d.config.owner_wa).trim() !== '') {
-    OWNER_NUMBERS.push(String(d.config.owner_wa).replace(/[^0-9]/g, ''))
-  }
-  if (d.config?.owner_lid && String(d.config.owner_lid).trim() !== '') {
-    OWNER_NUMBERS.push(String(d.config.owner_lid).replace(/[^0-9]/g, ''))
-  }
-} catch {}
-console.log(`👑 Owner Credentials (Terdaftar):`, OWNER_NUMBERS)
 
 let selfMode = false
 try { selfMode = fs.readFileSync(SELF_FILE, 'utf-8').trim() === '1' } catch {}
@@ -147,11 +148,12 @@ async function connectToWhatsApp() {
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
     
-    // Tarik raw ID pengirim
+    // Ngambil raw ID pengirim dan ambil angkanya doang
     const senderRaw = msg.key.participant || msg.key.remoteJid || ''
+    const senderClean = senderRaw.replace(/[^0-9]/g, '')
     
-    // LOGIKA SAKTI: Pake .includes() biar fleksibel, tapi digembok minimal 6 digit biar kaga jebol
-    const isOwner = msg.key.fromMe || OWNER_NUMBERS.some(num => num && num.length > 5 && senderRaw.includes(num))
+    // Cek apakah angka pengirim (WA/LID) nge-match sama yang ada di config.json
+    const isOwner = msg.key.fromMe || OWNER_NUMBERS.some(num => num && num.length > 5 && senderClean.includes(num))
 
     if (msg.key.fromMe && !isOwner) return 
 
@@ -291,7 +293,7 @@ async function connectToWhatsApp() {
       try {
         const cfgRes  = await fetch(`${BACKEND}/status`)
         const cfgData = await cfgRes.json()
-        await sock.sendMessage(from, { text: buildWelcome(cfgData.config?.nama_ai || 'Nova AI') })
+        await sock.sendMessage(from, { text: buildWelcome(cfgData.config?.nama_ai || configData.nama_ai || 'Nova AI') })
       } catch {
         await sock.sendMessage(from, { text: buildWelcome('Nova AI') })
       }
