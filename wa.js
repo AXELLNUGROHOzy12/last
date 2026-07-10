@@ -36,7 +36,7 @@ async function waitForBackend(maxRetries = 15, delayMs = 1000) {
 }
 await waitForBackend()
 
-// ── Setup Config & State (Anti Jebol) ──
+// ── Setup Config & State (Anti Jebol & Anti Ghost) ──
 let OWNER_NUMBERS = ['628772703519', '264643620647015']
 try {
   const r = await fetch(`${BACKEND}/status`)
@@ -147,12 +147,11 @@ async function connectToWhatsApp() {
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
     
-    // Murni ngambil ID nomor sebelum tanda '@' atau ':' (biar ga kena bug multi-device)
-    const senderRaw = msg.key.participant || msg.key.remoteJid
-    const senderClean = senderRaw.split('@')[0].split(':')[0]
+    // Tarik raw ID pengirim
+    const senderRaw = msg.key.participant || msg.key.remoteJid || ''
     
-    // STRICT MATCH: Harus ada angkanya dan === sama persis
-    const isOwner = OWNER_NUMBERS.some(num => num && num.length > 5 && senderClean === num) || msg.key.fromMe
+    // LOGIKA SAKTI: Pake .includes() biar fleksibel, tapi digembok minimal 6 digit biar kaga jebol
+    const isOwner = msg.key.fromMe || OWNER_NUMBERS.some(num => num && num.length > 5 && senderRaw.includes(num))
 
     if (msg.key.fromMe && !isOwner) return 
 
