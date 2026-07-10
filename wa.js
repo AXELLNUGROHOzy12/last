@@ -36,18 +36,17 @@ async function waitForBackend(maxRetries = 15, delayMs = 1000) {
 }
 await waitForBackend()
 
-// ── Setup Config & State (Sesuai config.json) ──
-// Masukin nomor WA & LID lu sebagai default (cadangan permanen)
+// ── Setup Config & State (Anti Jebol) ──
 let OWNER_NUMBERS = ['628772703519', '264643620647015']
 try {
   const r = await fetch(`${BACKEND}/status`)
   const d = await r.json()
   
-  // Kalo backend ngasih data config, tambahin juga (biar dinamis)
-  if (d.config?.owner_wa) {
+  // Bersihin dan pastiin ga ada string kosong yang masuk
+  if (d.config?.owner_wa && String(d.config.owner_wa).trim() !== '') {
     OWNER_NUMBERS.push(String(d.config.owner_wa).replace(/[^0-9]/g, ''))
   }
-  if (d.config?.owner_lid) {
+  if (d.config?.owner_lid && String(d.config.owner_lid).trim() !== '') {
     OWNER_NUMBERS.push(String(d.config.owner_lid).replace(/[^0-9]/g, ''))
   }
 } catch {}
@@ -148,12 +147,12 @@ async function connectToWhatsApp() {
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
     
-    // Deteksi pengirim versi Bar-bar (Super Akurat)
+    // Murni ngambil ID nomor sebelum tanda '@' atau ':' (biar ga kena bug multi-device)
     const senderRaw = msg.key.participant || msg.key.remoteJid
-    const senderClean = senderRaw.replace(/[^0-9]/g, '') // Buang semua huruf/@, sisain angka doang
+    const senderClean = senderRaw.split('@')[0].split(':')[0]
     
-    // Cek apakah angka pengirim cocok sama WA lu atau LID lu
-    const isOwner = OWNER_NUMBERS.some(num => senderClean.includes(num)) || msg.key.fromMe
+    // STRICT MATCH: Harus ada angkanya dan === sama persis
+    const isOwner = OWNER_NUMBERS.some(num => num && num.length > 5 && senderClean === num) || msg.key.fromMe
 
     if (msg.key.fromMe && !isOwner) return 
 
@@ -193,7 +192,6 @@ async function connectToWhatsApp() {
 
     // ── FITUR BAWAAN WA.JS ──
 
-    // /sc (SoundCloud)
     if (cmdFull.startsWith('/sc ')) {
       const query = text.trim().substring(4).trim()
       try {
@@ -217,7 +215,6 @@ async function connectToWhatsApp() {
       return
     }
 
-    // /spotify
     if (cmdFull.startsWith('/spotify ')) {
       const url = text.trim().split(' ')[1]
       try {
@@ -234,7 +231,6 @@ async function connectToWhatsApp() {
       return
     }
 
-    // /brat
     if (cmdFull.startsWith('/brat ')) {
       const bratText = text.trim().substring(6).trim()
       try {
@@ -248,7 +244,6 @@ async function connectToWhatsApp() {
       return
     }
 
-    // /dd (TikTok)
     if (cmdFull.startsWith('/dd ')) {
       const tiktokUrl = text.trim().split(' ')[1]
       try {
@@ -266,7 +261,6 @@ async function connectToWhatsApp() {
 
     // ── FITUR LAMA (BACKEND AI & FALLBACK) ──
 
-    // /ai (Chatbot Provider)
     if (cmdFull.startsWith('/ai ')) {
       const provider = text.trim().split(' ').slice(1).join(' ').trim().toLowerCase()
       const fromNumber = from.split('@')[0].split(':')[0]
@@ -284,7 +278,6 @@ async function connectToWhatsApp() {
       return
     }
 
-    // /self
     if (cmdFull === '/self') {
       if (!isOwner) return await sock.sendMessage(from, { text: '❌ Fitur owner only dawg!' }, { quoted: msg })
       await setSelfMode(!selfMode)
@@ -294,7 +287,6 @@ async function connectToWhatsApp() {
 
     if (selfMode && isGroup) return
 
-    // Welcome Message (Buat User Baru)
     if (!seenUsers.has(from)) {
       await markSeen(from)
       try {
@@ -306,7 +298,6 @@ async function connectToWhatsApp() {
       }
     }
 
-    // Fallback Semua Chat/Command ke Backend AI
     try {
       const res = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
@@ -317,9 +308,7 @@ async function connectToWhatsApp() {
       if (data.reply || data.error) {
         await sock.sendMessage(from, { text: data.reply || data.error })
       }
-    } catch (e) {
-      // Diem aja kalo error
-    }
+    } catch (e) {}
   })
 }
 
