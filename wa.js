@@ -21,7 +21,7 @@ const QR_FILE = 'qr_current.txt'
 const QR_IMAGE = 'qr_current.png'
 const SELF_FILE = 'self_mode.txt'
 const SEEN_FILE = 'seen_users.json'
-const DS_FILE = 'ds_mode.txt' // File buat nyimpen ingatan DS
+const DS_FILE = 'ds_mode.txt'
 
 // ── Tunggu Backend Siap ──
 async function waitForBackend(maxRetries = 15, delayMs = 1000) {
@@ -36,14 +36,22 @@ async function waitForBackend(maxRetries = 15, delayMs = 1000) {
 }
 await waitForBackend()
 
-// ── Setup Config & State ──
-let OWNER_NUMBER = '628772703519'
+// ── Setup Config & State (Sesuai config.json) ──
+// Masukin nomor WA & LID lu sebagai default (cadangan permanen)
+let OWNER_NUMBERS = ['628772703519', '264643620647015']
 try {
   const r = await fetch(`${BACKEND}/status`)
   const d = await r.json()
-  if (d.config?.owner_wa) OWNER_NUMBER = d.config.owner_wa
+  
+  // Kalo backend ngasih data config, tambahin juga (biar dinamis)
+  if (d.config?.owner_wa) {
+    OWNER_NUMBERS.push(String(d.config.owner_wa).replace(/[^0-9]/g, ''))
+  }
+  if (d.config?.owner_lid) {
+    OWNER_NUMBERS.push(String(d.config.owner_lid).replace(/[^0-9]/g, ''))
+  }
 } catch {}
-console.log(`👑 Owner WA number: ${OWNER_NUMBER}`)
+console.log(`👑 Owner Credentials (Terdaftar):`, OWNER_NUMBERS)
 
 let selfMode = false
 try { selfMode = fs.readFileSync(SELF_FILE, 'utf-8').trim() === '1' } catch {}
@@ -73,7 +81,7 @@ function buildWelcome(aiName) {
   return (
     `Halo! 👋 Selamat datang!\n\n` +
     `Perkenalkan, aku *${aiName}* — asisten AI yang siap membantu kamu.\n\n` +
-    `Bot ini dibuat oleh *${OWNER_NAME}* (wa.me/${OWNER_NUMBER}).\n\n` +
+    `Bot ini dibuat oleh *${OWNER_NAME}*.\n\n` +
     `Silakan mulai chat! 😊`
   )
 }
@@ -135,16 +143,18 @@ async function connectToWhatsApp() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return
     const msg = messages[0]
-    if (!msg?.message) return // Dihapus msg.key.fromMe dari sini biar owner tetep bisa ngasih command
+    if (!msg?.message) return 
 
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
     
-    // Deteksi pengirim pake cara aman (bisa handle format @lid)
-    const sender = msg.key.participant || msg.key.remoteJid
-    const isOwner = sender.includes(OWNER_NUMBER) || msg.key.fromMe
+    // Deteksi pengirim versi Bar-bar (Super Akurat)
+    const senderRaw = msg.key.participant || msg.key.remoteJid
+    const senderClean = senderRaw.replace(/[^0-9]/g, '') // Buang semua huruf/@, sisain angka doang
+    
+    // Cek apakah angka pengirim cocok sama WA lu atau LID lu
+    const isOwner = OWNER_NUMBERS.some(num => senderClean.includes(num)) || msg.key.fromMe
 
-    // Jangan proses chat kalo botnya ngetik sendiri (kecuali bot itu sendiri adalah owner)
     if (msg.key.fromMe && !isOwner) return 
 
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
@@ -167,7 +177,7 @@ async function connectToWhatsApp() {
 
     // Blokir semua aktivitas kalo DS Mode nyala (kecuali /ping)
     if (dsMode && command !== 'ping') {
-      return // Diem aja, kaga ngeproses apapun
+      return 
     }
 
     // 1. Eksekusi Plugin Dulu
