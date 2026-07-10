@@ -16,11 +16,10 @@ const __dirname = path.dirname(__filename)
 const PORT = process.env.PORT || 8000
 const BACKEND = process.env.BACKEND_URL || `http://localhost:${PORT}`
 
-// Cuma buat baca nama AI & nama User doang
+// Baca nama config buat display doang
 const configPath = path.join(__dirname, 'config.json')
 let configData = {}
 let OWNER_NAME = 'exel'
-
 try {
   configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
   if (configData.nama_user) OWNER_NAME = configData.nama_user
@@ -136,10 +135,13 @@ async function connectToWhatsApp() {
     const from = msg.key.remoteJid
     const isGroup = from.endsWith('@g.us')
     
+    // Ambil JID murni (bisa deteksi grup/personal/LID)
     const senderRaw = msg.key.participant || msg.key.remoteJid || ''
     
-    // 🔥 HARDCODE TOTAL: Cek murni tanpa perantara
-    const isOwner = msg.key.fromMe || senderRaw.includes('628772703519') || senderRaw.includes('264643620647015')
+    // PROTEKSI HARDCODE UTAMA
+    const isOwner = msg.key.fromMe || 
+                    senderRaw.includes('628772703519') || 
+                    senderRaw.includes('264643620647015')
 
     if (msg.key.fromMe && !isOwner) return 
 
@@ -150,10 +152,13 @@ async function connectToWhatsApp() {
     const command = args[0].toLowerCase().replace(/^[\/\.#]/, '')
     const cmdFull = text.trim().toLowerCase()
 
-    // ── FITUR /DS (DISCONNECT) KHUSUS OWNER ──
+    // ── FITUR /DS (DISCONNECT) ──
     if (command === 'ds') {
       if (!isOwner) {
-        return await sock.sendMessage(from, { text: '❌ Lu sapa dawg? Cuma owner yang bisa pake command ini!' }, { quoted: msg })
+        // 🔥 DEBUG MODE: Langsung nampilin string ID lu biar ketahuan salahnya di mana
+        return await sock.sendMessage(from, { 
+          text: `❌ *AKSES DITOLAK*\n\nID lu kaga cocok mase.\n> *ID Detector:* \`${senderRaw}\`\n\nPastikan ID di atas ada di list hardcode wa.js!` 
+        }, { quoted: msg })
       }
 
       await setDsMode(!dsMode)
@@ -260,7 +265,11 @@ async function connectToWhatsApp() {
     }
 
     if (cmdFull === '/self') {
-      if (!isOwner) return await sock.sendMessage(from, { text: '❌ Fitur owner only dawg!' }, { quoted: msg })
+      if (!isOwner) {
+        return await sock.sendMessage(from, { 
+          text: `❌ *AKSES DITOLAK*\n\n> *ID Detector:* \`${senderRaw}\`` 
+        }, { quoted: msg })
+      }
       await setSelfMode(!selfMode)
       await sock.sendMessage(from, { text: selfMode ? '✅ Self mode ON' : '🔓 Self mode OFF' })
       return
