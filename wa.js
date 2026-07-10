@@ -73,7 +73,8 @@ function buildWelcome(aiName) {
     `Halo! 👋 Selamat datang!\n\n` +
     `Perkenalkan, aku *${aiName}* — asisten AI yang siap membantu kamu.\n\n` +
     `Bot ini dibuat oleh *${OWNER_NAME}*.\n\n` +
-    `Silakan mulai chat! 😊`
+    `Silakan mulai chat! 😊`+
+    `Note:Owner hanya mengizinkan aktivitas yang legal tanpa ada nya eksploitasi!`
   )
 }
 
