@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import fs from 'fs'
 import { writeFile } from 'fs/promises'
@@ -16,8 +16,15 @@ const __dirname = path.dirname(__filename)
 const PORT = process.env.PORT || 8000
 const BACKEND = process.env.BACKEND_URL || `http://localhost:${PORT}`
 
+// DATA_DIR bisa diarahkan ke Railway Volume (mis. /data) — config.json,
+// sesi WhatsApp (wa_auth), daftar user yang udah pernah chat, dan setting
+// mode disimpan di sini biar tidak hilang/reset tiap redeploy. Harus sama
+// dengan DATA_DIR yang dipakai back.py, biar keduanya baca file yang sama.
+const DATA_DIR = process.env.DATA_DIR || __dirname
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
+
 // Baca nama config buat display doang
-const configPath = path.join(__dirname, 'config.json')
+const configPath = path.join(DATA_DIR, 'config.json')
 let configData = {}
 let OWNER_NAME = 'exel'
 try {
@@ -25,11 +32,21 @@ try {
   if (configData.nama_user) OWNER_NAME = configData.nama_user
 } catch (e) {}
 
-const QR_FILE = 'qr_current.txt'
-const QR_IMAGE = 'qr_current.png'
-const SELF_FILE = 'self_mode.txt'
-const SEEN_FILE = 'seen_users.json'
-const DS_FILE = 'ds_mode.txt'
+// Key buat otentikasi wa.js -> back.py (server-ke-server). Prioritas env
+// var API_KEY (master key, disarankan). Fallback: ambil key pertama yang
+// ada di config.json["api_keys"] (format baru, dict per-client).
+let API_KEY = process.env.API_KEY || ''
+if (!API_KEY && configData.api_keys && typeof configData.api_keys === 'object') {
+  const firstKey = Object.keys(configData.api_keys)[0]
+  if (firstKey) API_KEY = firstKey
+}
+
+const QR_FILE = path.join(DATA_DIR, 'qr_current.txt')
+const QR_IMAGE = path.join(DATA_DIR, 'qr_current.png')
+const SELF_FILE = path.join(DATA_DIR, 'self_mode.txt')
+const SEEN_FILE = path.join(DATA_DIR, 'seen_users.json')
+const DS_FILE = path.join(DATA_DIR, 'ds_mode.txt')
+const WA_AUTH_DIR = path.join(DATA_DIR, 'wa_auth')
 
 // ── Tunggu Backend Siap ──
 async function waitForBackend(maxRetries = 15, delayMs = 1000) {
@@ -83,15 +100,103 @@ const plugins = {}
 const pluginDir = path.join(__dirname, 'plugins')
 if (!fs.existsSync(pluginDir)) fs.mkdirSync(pluginDir)
 
+// Ambil isi teks dari sebuah pesan WA mentah (dipakai buat pesan utama maupun quoted)
+function extractMessageText(message) {
+  if (!message) return ''
+  return message.conversation || message.extendedTextMessage?.text ||
+         message.imageMessage?.caption || message.videoMessage?.caption || ''
+}
+
+// Bikin objek "m" ala framework bot penuh (reply/react/quoted/args) dari pesan
+// mentah Baileys, buat plugin yang formatnya beda dari bawaan Nova AI
+// (yang cuma pakai (msg, sock, args) polos).
+function buildCompatM(msg, sock, args, text, prefix) {
+  const chat = msg.key.remoteJid
+  const ctx = msg.message?.extendedTextMessage?.contextInfo
+
+  let quoted = null
+  if (ctx?.quotedMessage) {
+    const qMessage = ctx.quotedMessage
+    const qKey = {
+      remoteJid: chat,
+      id: ctx.stanzaId,
+      participant: ctx.participant,
+      fromMe: false,
+    }
+    const docMsg = qMessage.documentMessage
+    quoted = {
+      text: extractMessageText(qMessage),
+      body: extractMessageText(qMessage),
+      mimetype: docMsg?.mimetype || qMessage.imageMessage?.mimetype || qMessage.videoMessage?.mimetype || null,
+      filename: docMsg?.fileName || null,
+      download: async () => downloadMediaMessage({ key: qKey, message: qMessage }, 'buffer', {}),
+    }
+  }
+
+  return {
+    key: msg.key,
+    chat,
+    sender: msg.key.participant || msg.key.remoteJid,
+    prefix,
+    args,
+    text,
+    quoted,
+    reply: async (str) => sock.sendMessage(chat, { text: str }, { quoted: msg }),
+    react: async (emoji) => sock.sendMessage(chat, { react: { text: emoji, key: msg.key } }),
+  }
+}
+
+// Bungkus plugin format baru (export { config, handler }, pakai objek "m")
+// biar bisa dipanggil kayak plugin biasa: plugins[cmd](msg, sock, args)
+function wrapNewFormatPlugin(handler) {
+  return async (msg, sock, args) => {
+    const rawText = msg.message.conversation || msg.message.extendedTextMessage?.text ||
+                     msg.message.imageMessage?.caption || ''
+    const prefixChar = /^[\/.#]/.test(rawText.trim()) ? rawText.trim()[0] : '/'
+    const text = args.slice(1).join(' ')
+    const m = buildCompatM(msg, sock, args.slice(1), text, prefixChar)
+    await handler(m, { sock, text })
+  }
+}
+
 const loadPlugins = async () => {
-  const files = fs.readdirSync(pluginDir).filter(f => f.endsWith('.js'))
-  for (const file of files) {
-    const pluginUrl = pathToFileURL(path.join(pluginDir, file)).href
-    const plugin = await import(pluginUrl)
-    if (plugin.default && plugin.default.command) {
-      plugin.default.command.forEach(cmd => {
-        plugins[cmd] = plugin.default.handler
-      })
+  // Scan plugins/*.js (format lama, flat) + plugins/<kategori>/*.js (format
+  // baru, 1 level subfolder — sesuai field "category" yang dideklarasiin
+  // plugin itu sendiri, dan sesuai kedalaman folder yang diasumsikan
+  // import relatif kayak '../../config.js' di dalam plugin itu).
+  const entries = fs.readdirSync(pluginDir, { withFileTypes: true })
+  const files = []
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      files.push(path.join(pluginDir, entry.name))
+    } else if (entry.isDirectory()) {
+      const sub = fs.readdirSync(path.join(pluginDir, entry.name)).filter(f => f.endsWith('.js'))
+      for (const f of sub) files.push(path.join(pluginDir, entry.name, f))
+    }
+  }
+
+  for (const filePath of files) {
+    try {
+      const pluginUrl = pathToFileURL(filePath).href
+      const plugin = await import(pluginUrl)
+
+      // Format lama (bawaan Nova AI): export default { command: [...], handler }
+      if (plugin.default && plugin.default.command) {
+        plugin.default.command.forEach(cmd => {
+          plugins[cmd] = plugin.default.handler
+        })
+      }
+      // Format baru: export { config, handler } — pakai objek "m" ala framework lain
+      else if (plugin.config && plugin.handler) {
+        const names = [plugin.config.name, ...(plugin.config.alias || [])].filter(Boolean)
+        names.forEach(cmd => {
+          plugins[cmd.toLowerCase()] = wrapNewFormatPlugin(plugin.handler)
+        })
+      }
+    } catch (e) {
+      // Satu plugin gagal load (mis. dependency belum ke-install) gak boleh
+      // bikin SEMUA plugin lain ikut gagal — log doang, lanjut ke file berikutnya.
+      console.error(`⚠️  Plugin gagal dimuat: ${path.relative(pluginDir, filePath)} — ${e.message}`)
     }
   }
 }
@@ -99,7 +204,7 @@ await loadPlugins()
 
 // ── Main Bot Connection ──
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState('wa_auth')
+  const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR)
   const { version } = await fetchLatestBaileysVersion()
 
   const sock = makeWASocket({
@@ -170,6 +275,26 @@ async function connectToWhatsApp() {
     // Blokir semua aktivitas kalo DS Mode nyala (kecuali /ping)
     if (dsMode && command !== 'ping') {
       return 
+    }
+
+    // ── FITUR /SETOKEN — simpen Vercel token buat plugin deploy.js ──
+    if (command === 'setoken') {
+      if (!isOwner) {
+        return await sock.sendMessage(from, { text: '❌ Cuma owner yang bisa set token.' }, { quoted: msg })
+      }
+      const token = args.slice(1).join(' ').trim()
+      if (!token) {
+        return await sock.sendMessage(from, { text: 'Format: /setoken {vercel_token}' }, { quoted: msg })
+      }
+      try {
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+        cfg.vercel_token = token
+        fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf-8')
+        await sock.sendMessage(from, { text: '✅ Vercel token disimpan. Plugin /deploy sekarang siap dipakai.' }, { quoted: msg })
+      } catch (e) {
+        await sock.sendMessage(from, { text: '❌ Gagal simpan token: ' + e.message }, { quoted: msg })
+      }
+      return
     }
 
     // 1. Eksekusi Plugin Dulu
@@ -290,7 +415,7 @@ async function connectToWhatsApp() {
     try {
       const res = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
         body: JSON.stringify({ session_id: from, message: text })
       })
       const data = await res.json()

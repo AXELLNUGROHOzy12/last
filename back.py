@@ -6,14 +6,31 @@ import json
 import os
 import re
 import secrets
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+import threading
+from collections import defaultdict, deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.request
 import urllib.error
 import urllib.parse
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-USERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user.json")
-TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR bisa diarahkan ke Railway Volume (mis. /data) supaya config,
+# daftar user, token, dll tidak hilang tiap kali redeploy.
+DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+USERS_FILE = os.path.join(DATA_DIR, "user.json")
+TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
+
+# Kalau DATA_DIR custom (volume) dan file belum ada di sana, salin dari
+# versi bawaan project (kalau ada) sekali di awal biar config awal tidak hilang.
+for _fname, _dst in (("config.json", CONFIG_FILE), ("user.json", USERS_FILE), ("token.json", TOKEN_FILE)):
+    _seed = os.path.join(BASE_DIR, _fname)
+    if not os.path.exists(_dst) and os.path.exists(_seed) and _seed != _dst:
+        import shutil
+        shutil.copyfile(_seed, _dst)
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 CHATGPT_MODEL = "gpt-4o-mini"
@@ -25,6 +42,42 @@ def get_all_providers(cfg):
     """Built-in + semua custom endpoint yang udah ditambahkan."""
     custom = list(cfg.get("endpoints", {}).keys())
     return BUILTIN_AI + custom
+
+# ── Rate limit: berlaku PER-IP, terlepas dari API key valid atau tidak ──
+# Ini jaga-jaga kalau key bocor / di-share, orang tetap nggak bisa spam.
+RATE_LIMIT_MAX = 20      # maksimal request
+RATE_LIMIT_WINDOW = 60   # per 60 detik
+_rate_buckets = defaultdict(deque)
+
+def is_rate_limited(ip):
+    now = time.time()
+    bucket = _rate_buckets[ip]
+    while bucket and now - bucket[0] > RATE_LIMIT_WINDOW:
+        bucket.popleft()
+    if len(bucket) >= RATE_LIMIT_MAX:
+        blocked_ips.append({"ts": now, "ip": ip})
+        return True
+    bucket.append(now)
+    return False
+
+# ── Data buat page monitor (in-memory, reset tiap restart — cukup buat live view) ──
+SERVER_START = time.time()
+recent_activity = deque(maxlen=100)   # {ts, key_name, provider, latency_ms, preview}
+recent_errors = deque(maxlen=50)      # {ts, provider, error}
+auth_failures = deque(maxlen=100)     # {ts, ip}
+blocked_ips = deque(maxlen=100)       # {ts, ip} — kena rate limit
+requests_by_hour = defaultdict(int)   # "YYYY-MM-DD HH:00" -> jumlah request
+
+def log_activity(key_name, provider, latency_ms, msg_preview):
+    recent_activity.append({
+        "ts": time.time(), "key_name": key_name, "provider": provider,
+        "latency_ms": round(latency_ms), "preview": msg_preview[:60]
+    })
+    bucket = time.strftime("%Y-%m-%d %H:00")
+    requests_by_hour[bucket] += 1
+
+def log_error(provider, error):
+    recent_errors.append({"ts": time.time(), "provider": provider, "error": str(error)[:200]})
 
 DEFAULT_CONFIG = {
     "nama_ai": "Nova",
@@ -42,9 +95,12 @@ def load_config():
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
+_config_lock = threading.Lock()
+
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    with _config_lock:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -72,6 +128,64 @@ def save_tokens(tokens_data):
         json.dump(tokens_data, f, indent=2)
 
 config = load_config()
+
+# ── API Key ─────────────────────────────────────────────
+# Prioritas: env var API_KEY (disarankan di Railway, tidak ikut ke-commit)
+# selalu jadi "master key" (nama tampilan "env"), dipakai server-ke-server
+# oleh wa.js. Selain itu, config.json["api_keys"] nyimpen banyak key
+# ber-nama, masing-masing dengan hitungan pemakaian & waktu terakhir
+# dipakai — biar per-client bisa dicabut satu-satu tanpa ganggu yang lain.
+#
+# Struktur config["api_keys"]:
+#   { "<key>": {"name": "web-widget", "created": <ts>, "requests": 0, "last_used": <ts|None>} }
+def ensure_api_keys(cfg):
+    if "api_keys" not in cfg or not isinstance(cfg["api_keys"], dict):
+        cfg["api_keys"] = {}
+    # Migrasi dari format lama (single "api_key" string)
+    old = cfg.pop("api_key", None)
+    if old and old not in cfg["api_keys"]:
+        cfg["api_keys"][old] = {"name": "default", "created": time.time(), "requests": 0, "last_used": None}
+    # Kalau belum ada key sama sekali dan env var juga kosong, bikinin satu
+    # biar client pertama (web widget) tetap bisa login.
+    if not cfg["api_keys"] and not os.environ.get("API_KEY", "").strip():
+        new_key = secrets.token_hex(24)
+        cfg["api_keys"][new_key] = {"name": "default", "created": time.time(), "requests": 0, "last_used": None}
+        print(f"⚠️  Belum ada API key — key baru digenerate (nama: default): {new_key}")
+        print("    Lihat lagi lewat: /apikey {kode_akses} list")
+    save_config(cfg)
+    return cfg["api_keys"]
+
+ensure_api_keys(config)
+ENV_MASTER_KEY = os.environ.get("API_KEY", "").strip()
+
+
+
+_last_key_flush = 0
+_FLUSH_INTERVAL = 20  # detik — statistik key ditulis ke disk paling sering tiap 20 detik, bukan tiap chat
+
+def check_api_key(handler):
+    """Validasi header X-Api-Key. Kalau cocok, catat pemakaian & balikin
+    nama key-nya (string). Kalau tidak valid, balikin None."""
+    global _last_key_flush
+    sent = handler.headers.get("X-Api-Key", "")
+    if not sent:
+        return None
+    if ENV_MASTER_KEY and secrets.compare_digest(sent, ENV_MASTER_KEY):
+        return "env-master"
+    for key, meta in config.get("api_keys", {}).items():
+        if secrets.compare_digest(sent, key):
+            meta["requests"] = meta.get("requests", 0) + 1
+            meta["last_used"] = time.time()
+            # Update di memory selalu (instan), tapi tulis ke disk di-throttle
+            # biar gak nambah latensi di SETIAP chat — cukup tiap 20 detik.
+            now = time.time()
+            if now - _last_key_flush > _FLUSH_INTERVAL:
+                save_config(config)
+                _last_key_flush = now
+            return meta.get("name", "unnamed")
+    auth_failures.append({"ts": time.time(), "ip": handler.client_address[0]})
+    return None
+
 chat_sessions = {}
 session_ai = {}   # session_id → provider aktif, default "gemini"
 global_ai   = config.get("global_ai") or None  # persist across restarts
@@ -266,7 +380,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Access-Code")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Access-Code, X-Api-Key")
         self.end_headers()
 
     def _serve_file(self, filepath, content_type):
@@ -291,10 +405,14 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file("static/index.html", "text/html; charset=utf-8")
         elif path == "/qr":
             self._serve_file("static/qr.html", "text/html; charset=utf-8")
+        elif path == "/admin":
+            self._serve_file("static/admin.html", "text/html; charset=utf-8")
+        elif path == "/monitor":
+            self._serve_file("static/monitor.html", "text/html; charset=utf-8")
         elif path == "/qr-data":
             self._serve_qr_data()
         elif path == "/qr-image":
-            self._serve_file("qr_current.png", "image/png")
+            self._serve_file(os.path.join(DATA_DIR, "qr_current.png"), "image/png")
         elif path.startswith("/static/"):
             fname = path.lstrip("/")
             ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
@@ -317,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_qr_data(self):
         try:
-            with open("qr_current.txt", "r", encoding="utf-8") as f:
+            with open(os.path.join(DATA_DIR, "qr_current.txt"), "r", encoding="utf-8") as f:
                 content = f.read().strip()
             if content == "connected":
                 result = {"status": "connected"}
@@ -363,10 +481,112 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/chat":
             global config, global_ai
+            # IP asli dipakai buat rate limit. X-Real-IP cuma dipercaya
+            # kalau disertai secret yang cocok (PROXY_SECRET) — biar orang
+            # yang punya API key valid nggak bisa nge-spoof header ini buat
+            # bypass rate limit dengan manggil backend langsung, skip Worker.
+            client_ip = self.client_address[0]
+            proxy_secret = os.environ.get("PROXY_SECRET", "").strip()
+            if proxy_secret and secrets.compare_digest(self.headers.get("X-Proxy-Secret", ""), proxy_secret):
+                real_ip = self.headers.get("X-Real-IP", "").strip()
+                if real_ip:
+                    client_ip = real_ip
+
+            if is_rate_limited(client_ip):
+                self._set_headers(429)
+                self.wfile.write(json.dumps({"error": "Terlalu banyak request, coba lagi sebentar."}).encode())
+                return
+
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length))
             msg = data.get("message", "").strip()
             session_id = data.get("session_id", "default")
+
+            # Command admin (/add, /delete, /change, /apikey) dilindungi oleh
+            # kode_akses sendiri-sendiri, jadi tetap bisa dipanggil walau
+            # X-Api-Key hilang/lupa — dipakai buat recovery. Selain itu
+            # (chat biasa & /ai) wajib X-Api-Key valid.
+            ADMIN_CMD_PREFIXES = ("/add ", "/delete ", "/change ", "/apikey ")
+            key_name = "admin-cmd"
+            if not msg.startswith(ADMIN_CMD_PREFIXES):
+                key_name = check_api_key(self)
+                if key_name is None:
+                    self._set_headers(401)
+                    self.wfile.write(json.dumps({"error": "API key tidak valid. Sertakan header X-Api-Key."}).encode())
+                    return
+
+            # ── /apikey {kode_akses} list|new {nama}|revoke {nama} — kelola API key ──
+            if msg.startswith("/apikey "):
+                parts = msg.split(" ", 3)
+                if len(parts) < 3:
+                    self._set_headers(400)
+                    self.wfile.write(json.dumps({
+                        "error": "Format:\n/apikey {kode_akses} list\n"
+                                 "/apikey {kode_akses} new {nama}\n"
+                                 "/apikey {kode_akses} revoke {nama}"
+                    }).encode())
+                    return
+                kode_input, action = parts[1], parts[2].strip().lower()
+                if kode_input != config.get("kode_akses", ""):
+                    self._set_headers(403)
+                    self.wfile.write(json.dumps({"error": "Kode akses salah."}).encode())
+                    return
+
+                if action == "list":
+                    lines = []
+                    if ENV_MASTER_KEY:
+                        lines.append("• env-master (dari Variables Railway, tidak bisa direvoke lewat chat)")
+                    for key, meta in config.get("api_keys", {}).items():
+                        last = meta.get("last_used")
+                        last_str = time.strftime("%d/%m %H:%M", time.localtime(last)) if last else "belum pernah"
+                        lines.append(f"• {meta.get('name')} — {meta.get('requests', 0)}x pakai, terakhir {last_str}\n  {key}")
+                    reply = "🔑 Daftar API key:\n\n" + ("\n".join(lines) if lines else "(kosong)")
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps({"reply": reply}).encode())
+                    return
+
+                if action == "new":
+                    if len(parts) < 4 or not parts[3].strip():
+                        self._set_headers(400)
+                        self.wfile.write(json.dumps({"error": "Format: /apikey {kode_akses} new {nama}"}).encode())
+                        return
+                    nama = parts[3].strip()
+                    new_key = secrets.token_hex(24)
+                    config.setdefault("api_keys", {})[new_key] = {
+                        "name": nama, "created": time.time(), "requests": 0, "last_used": None
+                    }
+                    save_config(config)
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps({
+                        "reply": f"✅ Key baru untuk '{nama}' berhasil dibuat:\n{new_key}\n\nSimpan baik-baik, key cuma ditampilkan sekali di sini (tapi bisa dicek ulang lewat 'list')."
+                    }).encode())
+                    return
+
+                if action == "revoke":
+                    if len(parts) < 4 or not parts[3].strip():
+                        self._set_headers(400)
+                        self.wfile.write(json.dumps({"error": "Format: /apikey {kode_akses} revoke {nama}"}).encode())
+                        return
+                    target = parts[3].strip()
+                    keys = config.get("api_keys", {})
+                    to_remove = [k for k, m in keys.items() if m.get("name") == target or k == target]
+                    if not to_remove:
+                        self._set_headers(404)
+                        self.wfile.write(json.dumps({"error": f"Key/nama '{target}' tidak ditemukan."}).encode())
+                        return
+                    for k in to_remove:
+                        del keys[k]
+                    save_config(config)
+                    self._set_headers(200)
+                    self.wfile.write(json.dumps({
+                        "reply": f"🗑️ {len(to_remove)} key untuk '{target}' dicabut. Client yang pakai key itu langsung ke-block."
+                    }).encode())
+                    return
+
+                self._set_headers(400)
+                self.wfile.write(json.dumps({"error": "Aksi tidak dikenal. Pakai 'list', 'new', atau 'revoke'."}).encode())
+                return
+
 
             # ── /ai {provider} — ganti AI untuk sesi ini ──
             if msg.startswith("/ai "):
@@ -491,13 +711,17 @@ class Handler(BaseHTTPRequestHandler):
             history = chat_sessions.setdefault(session_id, [])
             history.append({"role": "user", "text": msg})
 
+            _t0 = time.time()
             reply, err = call_ai(history, config, provider)
+            latency_ms = (time.time() - _t0) * 1000
             if err:
                 history.pop()
+                log_error(provider, err)
                 self._set_headers(500)
                 self.wfile.write(json.dumps({"error": err}).encode())
             else:
                 history.append({"role": "model", "text": reply})
+                log_activity(key_name, provider, latency_ms, msg)
                 self._set_headers(200)
                 self.wfile.write(json.dumps({"reply": reply}).encode())
 
@@ -550,6 +774,10 @@ class Handler(BaseHTTPRequestHandler):
             }).encode())
 
         elif self.path == "/global-ai":
+            if check_api_key(self) is None:
+                self._set_headers(401)
+                self.wfile.write(json.dumps({"error": "API key tidak valid. Sertakan header X-Api-Key."}).encode())
+                return
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length))
             provider = data.get("provider", "").strip().lower()
@@ -610,9 +838,124 @@ class Handler(BaseHTTPRequestHandler):
                 self._set_headers(200)
                 self.wfile.write(json.dumps({"status": "deleted"}).encode())
 
+            elif self.path == "/admin/apikeys/list":
+                out = []
+                for key, meta in config.get("api_keys", {}).items():
+                    out.append({
+                        "key": key, "name": meta.get("name"),
+                        "created": meta.get("created"),
+                        "requests": meta.get("requests", 0),
+                        "last_used": meta.get("last_used"),
+                    })
+                self._set_headers(200)
+                self.wfile.write(json.dumps({
+                    "keys": out, "env_master_active": bool(ENV_MASTER_KEY)
+                }).encode())
+
+            elif self.path == "/admin/apikeys/create":
+                nama = (data.get("name") or "").strip()
+                if not nama:
+                    self._set_headers(400)
+                    self.wfile.write(json.dumps({"error": "Nama wajib diisi."}).encode())
+                    return
+                new_key = secrets.token_hex(24)
+                config.setdefault("api_keys", {})[new_key] = {
+                    "name": nama, "created": time.time(), "requests": 0, "last_used": None
+                }
+                save_config(config)
+                self._set_headers(200)
+                self.wfile.write(json.dumps({"status": "created", "key": new_key, "name": nama}).encode())
+
+            elif self.path == "/admin/apikeys/revoke":
+                target = (data.get("name") or data.get("key") or "").strip()
+                keys = config.get("api_keys", {})
+                to_remove = [k for k, m in keys.items() if m.get("name") == target or k == target]
+                for k in to_remove:
+                    del keys[k]
+                save_config(config)
+                self._set_headers(200)
+                self.wfile.write(json.dumps({"status": "revoked", "removed": len(to_remove)}).encode())
+
+            elif self.path == "/admin/status":
+                self._set_headers(200)
+                self.wfile.write(json.dumps({
+                    "nama_ai": config.get("nama_ai"),
+                    "owner_wa": config.get("owner_wa"),
+                    "global_ai": global_ai,
+                    "total_users": len(users),
+                    "total_api_keys": len(config.get("api_keys", {})),
+                }).encode())
+
+            elif self.path == "/admin/monitor":
+                now = time.time()
+                # Status WA dari qr_current.txt yang ditulis wa.js
+                wa_status = "unknown"
+                try:
+                    with open(os.path.join(DATA_DIR, "qr_current.txt"), "r", encoding="utf-8") as f:
+                        wa_status = f.read().strip()
+                except FileNotFoundError:
+                    pass
+
+                owner_wa = config.get("owner_wa", "")
+                owner_masked = (owner_wa[:4] + "***" + owner_wa[-2:]) if len(owner_wa) > 6 else "***"
+
+                # request per jam, 24 jam terakhir, urut waktu
+                hours = []
+                for i in range(23, -1, -1):
+                    label = time.strftime("%H:00", time.localtime(now - i * 3600))
+                    bucket_key = time.strftime("%Y-%m-%d %H:00", time.localtime(now - i * 3600))
+                    hours.append({"label": label, "count": requests_by_hour.get(bucket_key, 0)})
+
+                activity = list(recent_activity)[-20:][::-1]
+                errors = list(recent_errors)[-15:][::-1]
+                blocked = list(blocked_ips)[-15:][::-1]
+                failed_auth = list(auth_failures)[-15:][::-1]
+
+                avg_latency = 0
+                if recent_activity:
+                    avg_latency = round(sum(a["latency_ms"] for a in recent_activity) / len(recent_activity))
+
+                self._set_headers(200)
+                self.wfile.write(json.dumps({
+                    "uptime_seconds": round(now - SERVER_START),
+                    "wa_status": wa_status,
+                    "global_ai": global_ai or "per-sesi",
+                    "requests_today": sum(v for k, v in requests_by_hour.items() if k.startswith(time.strftime("%Y-%m-%d"))),
+                    "requests_by_hour": hours,
+                    "avg_latency_ms": avg_latency,
+                    "recent_activity": activity,
+                    "recent_errors": errors,
+                    "blocked_ips": blocked,
+                    "auth_failures": failed_auth,
+                    "total_users": len(users),
+                    "total_api_keys": len(config.get("api_keys", {})),
+                    "env_master_active": bool(ENV_MASTER_KEY),
+                    "nama_ai": config.get("nama_ai"),
+                    "kepribadian_preview": (config.get("kepribadian", "")[:80]),
+                    "owner_wa_masked": owner_masked,
+                    "active_sessions": len(chat_sessions),
+                }).encode())
+
+            elif self.path == "/admin/test-provider":
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length)) if length else {}
+                provider = (data.get("provider") or "gemini").strip().lower()
+                t0 = time.time()
+                reply, err = call_ai([{"role": "user", "text": "ping"}], config, provider)
+                latency_ms = round((time.time() - t0) * 1000)
+                self._set_headers(200)
+                self.wfile.write(json.dumps({
+                    "ok": err is None, "provider": provider,
+                    "latency_ms": latency_ms, "error": err
+                }).encode())
+
+            else:
+                self._set_headers(404)
+                self.wfile.write(json.dumps({"error": "Route admin tidak ditemukan."}).encode())
+
 def main():
     port = int(os.environ.get("PORT", config.get("port", 8000)))
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print("Backend jalan di port", port)
     server.serve_forever()
 

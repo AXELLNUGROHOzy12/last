@@ -19,6 +19,8 @@
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "qrcode": "^1.5.4",
     "wa-sticker-formatter": "^4.4.4",
-    "soundcloud-scraper": "^5.0.3"
+    "soundcloud-scraper": "^5.0.3",
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0"
   }
 }

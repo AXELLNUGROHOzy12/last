@@ -60,9 +60,30 @@
   #send:hover { background: var(--accent2) }
   #send:disabled { background: var(--surface2); cursor: default }
   #send svg { width: 18px; height: 18px }
+
+  /* ── Gate (minta kode akses) ── */
+  #gate { position: fixed; inset: 0; background: rgba(10,11,16,.92); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px }
+  #gate.hidden { display: none }
+  .gate-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 100%; max-width: 320px; text-align: center }
+  .gate-box h2 { font-size: 16px; margin-bottom: 6px }
+  .gate-box p { font-size: 13px; color: var(--sub); margin-bottom: 16px }
+  .gate-box input { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; color: var(--text); padding: 10px 12px; font-size: 14px; margin-bottom: 10px; outline: none }
+  .gate-box input:focus { border-color: var(--accent) }
+  .gate-box button { width: 100%; background: var(--accent); border: none; color: #fff; border-radius: 10px; padding: 10px; font-size: 14px; font-weight: 600; cursor: pointer }
+  .gate-box button:hover { background: var(--accent2) }
+  .gate-err { color: #f87171; font-size: 12.5px; margin-top: 8px; min-height: 16px }
 </style>
 </head>
 <body>
+<div id="gate">
+  <div class="gate-box">
+    <h2>🔒 Akses Terbatas</h2>
+    <p>Masukkan kode akses untuk mulai chat dengan Nova AI.</p>
+    <input type="password" id="gateInput" placeholder="Kode akses" autocomplete="off">
+    <button id="gateBtn">Masuk</button>
+    <div class="gate-err" id="gateErr"></div>
+  </div>
+</div>
 <header>
   <div class="avatar">🤖</div>
   <div class="header-info">
@@ -89,6 +110,42 @@ const chat = document.getElementById('chat')
 const inp  = document.getElementById('inp')
 const send = document.getElementById('send')
 const SESSION = 'web-' + Math.random().toString(36).slice(2)
+
+// ── Gate: kode akses ──
+const gate = document.getElementById('gate')
+const gateInput = document.getElementById('gateInput')
+const gateBtn = document.getElementById('gateBtn')
+const gateErr = document.getElementById('gateErr')
+let API_KEY = localStorage.getItem('nova_api_key') || ''
+
+function showGate(msg) {
+  gateErr.textContent = msg || ''
+  gate.classList.remove('hidden')
+  gateInput.focus()
+}
+function hideGate() {
+  gate.classList.add('hidden')
+}
+if (API_KEY) hideGate(); else showGate()
+
+async function trySaveKey() {
+  const val = gateInput.value.trim()
+  if (!val) return
+  gateBtn.disabled = true
+  gateErr.textContent = ''
+  try {
+    // Validasi dengan ping ke /chat pakai pesan kosong-ish, tapi cara paling
+    // murah: langsung anggap valid dan biarkan pesan pertama yang membuktikan.
+    // Kalau nanti /chat balas 401, akan diminta ulang otomatis (lihat sendMsg).
+    localStorage.setItem('nova_api_key', val)
+    API_KEY = val
+    hideGate()
+  } finally {
+    gateBtn.disabled = false
+  }
+}
+gateBtn.addEventListener('click', trySaveKey)
+gateInput.addEventListener('keydown', e => { if (e.key === 'Enter') trySaveKey() })
 
 // Auto-resize textarea
 inp.addEventListener('input', () => {
@@ -125,6 +182,7 @@ function showTyping() {
 async function sendMsg() {
   const text = inp.value.trim()
   if (!text) return
+  if (!API_KEY) { showGate('Masukkan kode akses dulu.'); return }
   inp.value = ''
   inp.style.height = 'auto'
   send.disabled = true
@@ -135,9 +193,23 @@ async function sendMsg() {
   try {
     const res = await fetch('/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': API_KEY },
       body: JSON.stringify({ session_id: SESSION, message: text })
     })
+    if (res.status === 401) {
+      typing.remove()
+      localStorage.removeItem('nova_api_key')
+      API_KEY = ''
+      showGate('Kode akses salah atau kadaluarsa, coba lagi.')
+      send.disabled = false
+      return
+    }
+    if (res.status === 429) {
+      typing.remove()
+      addMsg('⏳ Kebanyakan pesan, tunggu sebentar ya.', 'ai')
+      send.disabled = false
+      return
+    }
     const data = await res.json()
     typing.remove()
     addMsg(data.reply || data.error || '(Tidak ada respons)', 'ai')
