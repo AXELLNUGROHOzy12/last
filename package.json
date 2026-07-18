@@ -21,6 +21,7 @@
     "wa-sticker-formatter": "^4.4.4",
     "soundcloud-scraper": "^5.0.3",
     "axios": "^1.7.9",
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "moment-timezone": "^0.5.46"
   }
 }

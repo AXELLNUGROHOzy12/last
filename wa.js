@@ -110,7 +110,7 @@ function extractMessageText(message) {
 // Bikin objek "m" ala framework bot penuh (reply/react/quoted/args) dari pesan
 // mentah Baileys, buat plugin yang formatnya beda dari bawaan Nova AI
 // (yang cuma pakai (msg, sock, args) polos).
-function buildCompatM(msg, sock, args, text, prefix) {
+function buildCompatM(msg, sock, args, text, prefix, command) {
   const chat = msg.key.remoteJid
   const ctx = msg.message?.extendedTextMessage?.contextInfo
 
@@ -135,13 +135,16 @@ function buildCompatM(msg, sock, args, text, prefix) {
 
   return {
     key: msg.key,
+    message: msg.message,   // biar bisa dipakai langsung sebagai {quoted: m} di sock.sendMessage
     chat,
     sender: msg.key.participant || msg.key.remoteJid,
+    pushName: msg.pushName || 'Kak',
     prefix,
+    command,
     args,
     text,
     quoted,
-    reply: async (str) => sock.sendMessage(chat, { text: str }, { quoted: msg }),
+    reply: async (str, opts = {}) => sock.sendMessage(chat, { text: str, ...opts }, { quoted: msg }),
     react: async (emoji) => sock.sendMessage(chat, { react: { text: emoji, key: msg.key } }),
   }
 }
@@ -150,12 +153,14 @@ function buildCompatM(msg, sock, args, text, prefix) {
 // biar bisa dipanggil kayak plugin biasa: plugins[cmd](msg, sock, args)
 function wrapNewFormatPlugin(handler) {
   return async (msg, sock, args) => {
+    const command = (args[0] || '').toLowerCase().replace(/^[\/.#]/, '')
     const rawText = msg.message.conversation || msg.message.extendedTextMessage?.text ||
                      msg.message.imageMessage?.caption || ''
     const prefixChar = /^[\/.#]/.test(rawText.trim()) ? rawText.trim()[0] : '/'
-    const text = args.slice(1).join(' ')
-    const m = buildCompatM(msg, sock, args.slice(1), text, prefixChar)
-    await handler(m, { sock, text })
+    const restArgs = args.slice(1)
+    const text = restArgs.join(' ')
+    const m = buildCompatM(msg, sock, restArgs, text, prefixChar, command)
+    await handler(m, { sock, text, args: restArgs })
   }
 }
 
@@ -188,7 +193,9 @@ const loadPlugins = async () => {
       }
       // Format baru: export { config, handler } — pakai objek "m" ala framework lain
       else if (plugin.config && plugin.handler) {
-        const names = [plugin.config.name, ...(plugin.config.alias || [])].filter(Boolean)
+        const nameField = plugin.config.name
+        const nameList = Array.isArray(nameField) ? nameField : [nameField]
+        const names = [...nameList, ...(plugin.config.alias || [])].filter(Boolean)
         names.forEach(cmd => {
           plugins[cmd.toLowerCase()] = wrapNewFormatPlugin(plugin.handler)
         })
@@ -213,6 +220,18 @@ async function connectToWhatsApp() {
     printQRInTerminal: true,
     browser: ['Nova AI', 'Chrome', '125.0.0']
   })
+
+  // Shim buat plugin gaya Ourin-MD yang manggil sock.sendMedia(jid, buffer|url, caption, quotedM, {type})
+  // — bukan bawaan Baileys, sock.sendMessage biasa cuma nerima {image:{url}} atau {image: Buffer}.
+  sock.sendMedia = async (jid, mediaInput, caption, quotedM, opts = {}) => {
+    const type = opts.type || 'image'
+    const mediaKey = ['image', 'video', 'audio', 'document'].includes(type) ? type : 'image'
+    const mediaValue = (typeof mediaInput === 'string' && mediaInput.startsWith('http'))
+      ? { url: mediaInput }
+      : mediaInput
+    const content = { [mediaKey]: mediaValue, caption, ...opts.extra }
+    return sock.sendMessage(jid, content, { quoted: quotedM })
+  }
 
   sock.ev.on('connection.update', async update => {
     const { connection, lastDisconnect, qr } = update

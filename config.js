@@ -19,12 +19,18 @@ function readRawConfig() {
   }
 }
 
+const raw = readRawConfig()
+
 // `vercel` dibikin getter biar tiap diakses baca ulang config.json —
 // jadi begitu /setoken update token, plugin langsung kepake tanpa restart bot.
+// Field lain (saluran, bot, APIkey, dll) di-passthrough dari config.json apa
+// adanya kalau ada; kalau gak ada, plugin yang makek udah sedia fallback
+// sendiri (pola `config.xxx?.yyy || default` di semua plugin baru).
 const configBridge = {
+  ...raw,
   get vercel() {
-    const raw = readRawConfig()
-    return { token: raw.vercel_token || process.env.VERCEL_TOKEN || null }
+    const fresh = readRawConfig()
+    return { token: fresh.vercel_token || process.env.VERCEL_TOKEN || null }
   }
 }
 
