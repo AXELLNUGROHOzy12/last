@@ -9,7 +9,7 @@ import { f } from "../../src/lib/ourin-http.js";
 import { AIRich } from "../../src/lib/ourin-builder.js";
 
 const pluginConfig = {
-  name: "pin",
+  name: ["pin"],
   alias: ["pinsearch", "pinterestsearch", "pins"],
   category: "tools",
   description: "Cari gambar di Pinterest (album)",
