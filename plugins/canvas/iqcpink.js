@@ -116,7 +116,16 @@ async function ensureAssets() {
     await loadAppleEmojiMap();
 
     if (!bgImgBuffer) {
-        bgImgBuffer = await downloadFile(BG_URL);
+        const buf = await downloadFile(BG_URL);
+        // Validasi dulu sebelum di-cache — kalau server CDN sempet ngasih
+        // halaman error/HTML (bukan gambar asli), jangan sampai ke-cache
+        // permanen dan bikin SEMUA request berikutnya ikut gagal terus.
+        try {
+            await loadImage(buf);
+        } catch (e) {
+            throw new Error(`Background image gagal di-decode (kemungkinan CDN error/rate limit): ${e.message}`);
+        }
+        bgImgBuffer = buf;
     }
 }
 
@@ -468,14 +477,18 @@ async function handler(m, { sock, text }) {
         let imgUrl = "";
         let caption = targetText || "";
         const tmpImgPath = join(process.cwd(), 'temp', `iqcpink_${Date.now()}.png`);
-        
+        const outPath = join(process.cwd(), 'temp', `iqcpink_out_${Date.now()}.png`);
+
+        // Pastikan folder temp sudah ada SEBELUM nulis file apapun ke dalamnya.
+        // Sebelumnya mkdir dipanggil setelah writeFile gambar quoted, jadi kalau
+        // folder temp belum ada (mis. abis fresh deploy/restart), writeFile bakal
+        // gagal duluan dengan ENOENT.
+        await mkdir(join(process.cwd(), 'temp'), { recursive: true });
+
         if (targetImgBuffer) {
             await writeFile(tmpImgPath, targetImgBuffer);
             imgUrl = tmpImgPath;
         }
-
-        const outPath = join(process.cwd(), 'temp', `iqcpink_out_${Date.now()}.png`);
-        await mkdir(join(process.cwd(), 'temp'), { recursive: true });
 
         const resultPath = await render(caption, timeStr, imgUrl, outPath);
 

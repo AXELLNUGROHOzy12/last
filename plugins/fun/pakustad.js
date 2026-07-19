@@ -31,7 +31,13 @@ async function handler(m, { sock }) {
     
     try {
         const apiUrl = `https://api.cuki.biz.id/api/canvas/ustadz?apikey=cuki-x&text=${encodeURIComponent(text)}`
-        const { results } = await f(apiUrl)
+        const data = await f(apiUrl)
+        const results = data?.results
+
+        if (!results || !results.url) {
+            throw new Error(`Respons API tidak valid / tidak ada results.url: ${JSON.stringify(data)}`)
+        }
+
         await sock.sendMedia(m.chat, results.url, text, m, {
             type: 'image'
         })
@@ -39,6 +45,9 @@ async function handler(m, { sock }) {
         m.react('✅')
         
     } catch (err) {
+        // Sebelumnya error di sini gak pernah di-log sama sekali, jadi kalau
+        // plugin ini gagal, gak ada jejak di log buat debug. Sekarang dicatat.
+        console.error('[pakustad error]:', err)
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
     }
