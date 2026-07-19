@@ -11,7 +11,7 @@ import { AIRich } from "../../src/lib/ourin-builder.js";
 const pluginConfig = {
   name: "pin",
   alias: ["pinsearch", "pinterestsearch", "pins"],
-  category: "search",
+  category: "tools",
   description: "Cari gambar di Pinterest (album)",
   usage: ".pin <query>",
   example: ".pin Zhao Lusi",
