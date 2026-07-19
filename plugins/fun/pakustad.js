@@ -1,3 +1,4 @@
+import axios from 'axios'
 import { f } from '../../src/lib/ourin-http.js'
 import te from '../../src/lib/ourin-error.js'
 const pluginConfig = {
@@ -38,7 +39,20 @@ async function handler(m, { sock }) {
             throw new Error(`Respons API tidak valid / tidak ada results.url: ${JSON.stringify(data)}`)
         }
 
-        await sock.sendMedia(m.chat, results.url, text, m, {
+        // Sebelumnya URL gambar langsung dilempar ke sock.sendMedia, jadi
+        // Baileys yang fetch sendiri di-belakang layar — dan itu kena 403
+        // dari server file api.cuki.biz.id (kemungkinan butuh User-Agent
+        // browser / nolak request tanpa header yang wajar). Solusinya kita
+        // download sendiri dulu pakai header yang sama kayak plugin lain,
+        // baru kirim hasilnya sebagai buffer.
+        const imgRes = await axios.get(results.url, {
+            responseType: 'arraybuffer',
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
+            timeout: 20000
+        })
+        const imgBuffer = Buffer.from(imgRes.data)
+
+        await sock.sendMedia(m.chat, imgBuffer, text, m, {
             type: 'image'
         })
         

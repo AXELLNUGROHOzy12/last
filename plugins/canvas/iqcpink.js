@@ -24,6 +24,7 @@ const pluginConfig = {
 
 let fontsLoaded = false;
 const BG_URL   = "https://cdn.jsdelivr.net/gh/ryyntwx/allimagerin@main/Iqcbyrin.png";
+const BG_URL_FALLBACK = "https://raw.githubusercontent.com/ryyntwx/allimagerin/main/Iqcbyrin.png";
 let bgImgBuffer = null;
 
 const INTER_FONTS = [
@@ -116,14 +117,21 @@ async function ensureAssets() {
     await loadAppleEmojiMap();
 
     if (!bgImgBuffer) {
-        const buf = await downloadFile(BG_URL);
         // Validasi dulu sebelum di-cache — kalau server CDN sempet ngasih
         // halaman error/HTML (bukan gambar asli), jangan sampai ke-cache
         // permanen dan bikin SEMUA request berikutnya ikut gagal terus.
+        // Kalau CDN utama (jsdelivr) gagal, coba host cadangan dulu
+        // (raw.githubusercontent) sebelum benar-benar nyerah.
+        let buf = await downloadFile(BG_URL);
         try {
             await loadImage(buf);
-        } catch (e) {
-            throw new Error(`Background image gagal di-decode (kemungkinan CDN error/rate limit): ${e.message}`);
+        } catch (e1) {
+            try {
+                buf = await downloadFile(BG_URL_FALLBACK);
+                await loadImage(buf);
+            } catch (e2) {
+                throw new Error(`Background image gagal diambil dari CDN utama maupun cadangan (${e1.message} / ${e2.message}). Kemungkinan repo asetnya bermasalah/dihapus.`);
+            }
         }
         bgImgBuffer = buf;
     }
