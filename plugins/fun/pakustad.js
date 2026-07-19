@@ -1,5 +1,6 @@
 import { f } from '../../src/lib/ourin-http.js'
 import te from '../../src/lib/ourin-error.js'
+
 const pluginConfig = {
     name: ['pakustad', 'pak-ustad', 'tanyaustad'],
     alias: [],
@@ -31,14 +32,39 @@ async function handler(m, { sock }) {
     
     try {
         const apiUrl = `https://api.cuki.biz.id/api/canvas/ustadz?apikey=cuki-x&text=${encodeURIComponent(text)}`
+<<<<<<< HEAD
         const { results } = await f(apiUrl)
         await sock.sendMedia(m.chat, results.url, text, m, {
             type: 'image'
         })
+=======
+        const res = await f(apiUrl)
+        
+        const data = res.data ? res.data : res;
+        
+        if (!data || !data.results || !data.results.url) {
+             m.react('☢')
+             return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
+        }
+
+        // Trik Bypass IP Block: Menggunakan Image Proxy (wsrv.nl)
+        const imgUrl = data.results.url;
+        const proxiedUrl = `https://wsrv.nl/?url=${encodeURIComponent(imgUrl)}`;
+
+        // Baileys akan menarik gambar lewat jalur proxy yang aman
+        await sock.sendMessage(m.chat, { 
+            image: { url: proxiedUrl }, 
+            caption: text 
+        }, { quoted: m });
+>>>>>>> 423ce976d2a62d46dc52976c36f45949e5a7e176
         
         m.react('✅')
         
     } catch (err) {
+<<<<<<< HEAD
+=======
+        console.error("Error di plugin pakustad:", err);
+>>>>>>> 423ce976d2a62d46dc52976c36f45949e5a7e176
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
     }
