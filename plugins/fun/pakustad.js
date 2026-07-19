@@ -1,6 +1,5 @@
 import { f } from '../../src/lib/ourin-http.js'
 import te from '../../src/lib/ourin-error.js'
-import axios from 'axios' // WAJIB ditambahkan untuk download manual
 
 const pluginConfig = {
     name: ['pakustad', 'pak-ustad', 'tanyaustad'],
@@ -42,19 +41,29 @@ async function handler(m, { sock }) {
              return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
         }
 
-        const secureUrl = data.results.url.replace(/^http:\/\//i, 'https://');
+        const imgUrl = data.results.url;
 
-        // FIX: Download gambar manual pakai Axios + fake User-Agent buat nembus 403 Forbidden
-        const imgRes = await axios.get(secureUrl, {
-            responseType: 'arraybuffer',
+        // FIX ULTIMATE: Gunakan native fetch bawaan Node.js + Header lengkap 
+        // Ini ampuh menembus Cloudflare/WAF yang memblokir Axios
+        const response = await fetch(imgUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Referer': 'https://api.cuki.biz.id/'
             }
         });
 
-        // Kirim buffer gambar langsung menggunakan sock.sendMessage standar Baileys
+        if (!response.ok) {
+            throw new Error(`Fetch gagal dengan status: ${response.status}`);
+        }
+
+        // Convert response stream menjadi Buffer agar bisa dikirim oleh Baileys
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        // Kirim buffer gambar
         await sock.sendMessage(m.chat, { 
-            image: imgRes.data, 
+            image: buffer, 
             caption: text 
         }, { quoted: m });
         
