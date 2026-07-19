@@ -126,18 +126,6 @@ async function setupEnv(bg) {
   let bgBuffer = bgCache.get(bg.name);
   if (!bgBuffer) {
     bgBuffer = await download(bg.url);
-    // Validasi hasil download beneran gambar yang bisa di-decode sebelum
-    // di-cache. Sebelumnya buffer apapun langsung di-cache tanpa dicek,
-    // jadi kalau sekali aja downloadnya rusak/kepotong/CDN ngasih halaman
-    // error, cache-nya ke-poison dan background itu bakal terus gagal
-    // ("Invalid SVG image") sampai ada request lain yang error dan
-    // ngosongin cache-nya. Coba sekali lagi kalau gagal decode.
-    try {
-      await loadImage(bgBuffer);
-    } catch (e) {
-      bgBuffer = await download(bg.url);
-      await loadImage(bgBuffer); // kalau masih gagal, biar throw ke caller
-    }
     bgCache.set(bg.name, bgBuffer);
   }
 

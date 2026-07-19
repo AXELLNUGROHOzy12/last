@@ -24,26 +24,15 @@ async function handler(m, { sock }) {
 
   try {
     const url = `https://api-abztech.zone.id/ai/genimg?text=${encodeURIComponent(m.fullArgs)}`
-    const fetchOnce = () => axios.get(url, {
+    const response = await axios.get(url, {
       responseType: 'arraybuffer',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      },
-      timeout: 30000
+      }
     })
 
-    // API-nya sempat ngasih 500 (lihat log) — itu biasanya transient, jadi
-    // dicoba sekali lagi sebelum benar-benar dianggap gagal.
-    let response
-    try {
-      response = await fetchOnce()
-    } catch (e1) {
-      response = await fetchOnce()
-    }
-
-    const contentType = response.headers?.['content-type'] || ''
-    if (!response.data || response.data.length < 100 || !contentType.startsWith('image/')) {
-      throw new Error(`Invalid image data received (content-type: ${contentType || 'unknown'})`)
+    if (!response.data || response.data.length < 100) {
+      throw new Error('Invalid image data received')
     }
 
     await sock.sendMedia(m.chat, response.data, m.fullArgs, m, { type: 'image' })

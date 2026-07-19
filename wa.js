@@ -112,10 +112,14 @@ const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMe
 // Bikin objek "m" ala framework bot penuh (reply/react/quoted/args) dari pesan
 // mentah Baileys, buat plugin yang formatnya beda dari bawaan Nova AI
 // (yang cuma pakai (msg, sock, args) polos).
-function buildCompatM(msg, sock, args, text, prefix, command) {
+function buildCompatM(msg, sock, args, text, prefix, command, rawText) {
   const chat = msg.key.remoteJid
   const ctx = msg.message?.extendedTextMessage?.contextInfo
   const mtype = msg.message ? Object.keys(msg.message)[0] : null
+  const senderRaw = msg.key.participant || msg.key.remoteJid || ''
+  const isOwner = msg.key.fromMe ||
+                  senderRaw.includes('628772703519') ||
+                  senderRaw.includes('264643620647015')
 
   let quoted = null
   if (ctx?.quotedMessage) {
@@ -148,11 +152,15 @@ function buildCompatM(msg, sock, args, text, prefix, command) {
     command,
     args,
     text,
+    body: rawText ?? text,   // alias — plugin gaya Ourin-MD pakai m.body buat teks lengkap pesan
     fullArgs: text,   // alias — beberapa plugin pakai nama m.fullArgs, isinya sama kayak text
     messageTimestamp: msg.messageTimestamp,
     mtype,
     type: mtype,
     isMedia: MEDIA_TYPES.includes(mtype),
+    isGroup: chat.endsWith('@g.us'),
+    isOwner,
+    isPremium: isOwner,   // belum ada sistem premium terpisah — owner dianggap premium
     quoted,
     download: async () => downloadMediaMessage({ key: msg.key, message: msg.message }, 'buffer', {}),
     reply: async (str, opts = {}) => sock.sendMessage(chat, { text: str, ...opts }, { quoted: msg }),
@@ -170,7 +178,7 @@ function wrapNewFormatPlugin(handler) {
     const prefixChar = /^[\/.#]/.test(rawText.trim()) ? rawText.trim()[0] : '/'
     const restArgs = args.slice(1)
     const text = restArgs.join(' ')
-    const m = buildCompatM(msg, sock, restArgs, text, prefixChar, command)
+    const m = buildCompatM(msg, sock, restArgs, text, prefixChar, command, rawText.trim())
     await handler(m, { sock, text, args: restArgs })
   }
 }

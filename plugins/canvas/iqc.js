@@ -178,11 +178,6 @@ async function handler(m, { sock, text }) {
         let caption = "";
         const tmpImgPath = join(process.cwd(), 'temp', `iqc_${Date.now()}.png`);
 
-        // Sama kayak bug iqcpink kemarin: mkdir folder temp harus jalan
-        // DULUAN sebelum ada file ditulis ke situ, kalau nggak bakal ENOENT
-        // pas folder temp belum ada (abis fresh deploy/restart).
-        await mkdir(join(process.cwd(), 'temp'), { recursive: true });
-
         if (targetImgBuffer) {
             await writeFile(tmpImgPath, targetImgBuffer);
             imgUrl = tmpImgPath;
@@ -195,7 +190,6 @@ async function handler(m, { sock, text }) {
         await m.react('🕕');
 
         const RIN_BG_URL = 'https://cdn.jsdelivr.net/gh/ryyntwx/allimagerin@main/iqc-hytam.png'
-        const RIN_BG_URL_FALLBACK = 'https://raw.githubusercontent.com/ryyntwx/allimagerin/main/iqc-hytam.png'
         const RIN_TMP = join(process.cwd(), 'temp')
 
         const RIN_FONTS = [
@@ -204,6 +198,9 @@ async function handler(m, { sock, text }) {
 
         const BG_W = 941
         const BG_H = 1671
+
+
+        await mkdir(RIN_TMP, { recursive: true })
 
         async function rinDownload(url, isJson = false) {
             const res = await axios.get(url, { responseType: isJson ? 'json' : 'arraybuffer', headers: { 'User-Agent': 'Mozilla/5.0' }, maxRedirects: 5 })
@@ -218,22 +215,7 @@ async function handler(m, { sock, text }) {
         }
 
         if (!bgImgBuffer) {
-            // jsdelivr repo/CDN-nya kadang ngasih respons yang gak bisa
-            // di-decode sebagai gambar (lihat log "Invalid SVG image").
-            // Validasi dulu sebelum di-cache, dan kalau gagal coba host
-            // cadangan (raw.githubusercontent) sebelum benar-benar nyerah.
-            let buf = await rinDownload(RIN_BG_URL);
-            try {
-                await loadImage(buf);
-            } catch (e1) {
-                try {
-                    buf = await rinDownload(RIN_BG_URL_FALLBACK);
-                    await loadImage(buf);
-                } catch (e2) {
-                    throw new Error(`Background image iqc gagal diambil dari CDN utama maupun cadangan (${e1.message} / ${e2.message}). Kemungkinan repo asetnya bermasalah/dihapus.`);
-                }
-            }
-            bgImgBuffer = buf;
+            bgImgBuffer = await rinDownload(RIN_BG_URL)
         }
 
         await loadAppleEmojiMap();

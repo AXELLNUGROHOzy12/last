@@ -24,7 +24,6 @@ const pluginConfig = {
 
 let fontsLoaded = false;
 const BG_URL   = "https://cdn.jsdelivr.net/gh/ryyntwx/allimagerin@main/Iqcbyrin.png";
-const BG_URL_FALLBACK = "https://raw.githubusercontent.com/ryyntwx/allimagerin/main/Iqcbyrin.png";
 let bgImgBuffer = null;
 
 const INTER_FONTS = [
@@ -117,23 +116,7 @@ async function ensureAssets() {
     await loadAppleEmojiMap();
 
     if (!bgImgBuffer) {
-        // Validasi dulu sebelum di-cache — kalau server CDN sempet ngasih
-        // halaman error/HTML (bukan gambar asli), jangan sampai ke-cache
-        // permanen dan bikin SEMUA request berikutnya ikut gagal terus.
-        // Kalau CDN utama (jsdelivr) gagal, coba host cadangan dulu
-        // (raw.githubusercontent) sebelum benar-benar nyerah.
-        let buf = await downloadFile(BG_URL);
-        try {
-            await loadImage(buf);
-        } catch (e1) {
-            try {
-                buf = await downloadFile(BG_URL_FALLBACK);
-                await loadImage(buf);
-            } catch (e2) {
-                throw new Error(`Background image gagal diambil dari CDN utama maupun cadangan (${e1.message} / ${e2.message}). Kemungkinan repo asetnya bermasalah/dihapus.`);
-            }
-        }
-        bgImgBuffer = buf;
+        bgImgBuffer = await downloadFile(BG_URL);
     }
 }
 
@@ -485,18 +468,14 @@ async function handler(m, { sock, text }) {
         let imgUrl = "";
         let caption = targetText || "";
         const tmpImgPath = join(process.cwd(), 'temp', `iqcpink_${Date.now()}.png`);
-        const outPath = join(process.cwd(), 'temp', `iqcpink_out_${Date.now()}.png`);
-
-        // Pastikan folder temp sudah ada SEBELUM nulis file apapun ke dalamnya.
-        // Sebelumnya mkdir dipanggil setelah writeFile gambar quoted, jadi kalau
-        // folder temp belum ada (mis. abis fresh deploy/restart), writeFile bakal
-        // gagal duluan dengan ENOENT.
-        await mkdir(join(process.cwd(), 'temp'), { recursive: true });
-
+        
         if (targetImgBuffer) {
             await writeFile(tmpImgPath, targetImgBuffer);
             imgUrl = tmpImgPath;
         }
+
+        const outPath = join(process.cwd(), 'temp', `iqcpink_out_${Date.now()}.png`);
+        await mkdir(join(process.cwd(), 'temp'), { recursive: true });
 
         const resultPath = await render(caption, timeStr, imgUrl, outPath);
 
