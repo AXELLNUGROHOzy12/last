@@ -34,19 +34,26 @@ async function handler(m, { sock }) {
         const apiUrl = `https://api.cuki.biz.id/api/canvas/ustadz?apikey=cuki-x&text=${encodeURIComponent(text)}`
         const res = await f(apiUrl)
         
-        // Pengaman anti-crash kalau API lagi down atau error
-        if (!res || !res.results?.url) {
+        // Amankan data JSON (antisipasi jika wrapper f() mereturn object axios)
+        const data = res.data ? res.data : res;
+        
+        if (!data || !data.results || !data.results.url) {
              m.react('☢')
-             return m.reply('Maaf, server API-nya lagi gangguan nih.')
+             return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
         }
 
-        await sock.sendMedia(m.chat, res.results.url, text, m, {
+        // FIX UTAMA: Ubah paksa http:// menjadi https:// agar diizinkan oleh sistem bot
+        const secureUrl = data.results.url.replace(/^http:\/\//i, 'https://');
+
+        await sock.sendMedia(m.chat, secureUrl, text, m, {
             type: 'image'
         })
         
         m.react('✅')
         
     } catch (err) {
+        // Log error ke terminal agar penyebabnya terlihat jelas
+        console.error("Error di plugin pakustad:", err);
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
     }
