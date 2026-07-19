@@ -36,18 +36,24 @@ async function handler(m, { sock }) {
 
   try {
     const apiUrl = `https://api.siputzx.my.id/api/s/pinterest?query=${encodeURIComponent(query)}`;
-    const data = await f(apiUrl);
+    const res = await f(apiUrl);
 
-    const results = data?.data?.slice(0, 10);
-    if (!results || results.length === 0) {
+    // Ambil array datanya dengan aman (antisipasi struktur JSON yang beda-beda)
+    let results = res?.data?.data || res?.data || res?.results || res;
+    
+    if (!Array.isArray(results) || results.length === 0) {
       m.react("❌");
       return m.reply(`❌ Tidak ditemukan hasil untuk: ${query}`);
     }
 
+    results = results.slice(0, 10);
     const mediaList = [];
 
-    for (const imageUrl of results) {
-      if (!imageUrl) continue;
+    for (const item of results) {
+      // Auto-detect property link gambar (string atau object)
+      const imageUrl = typeof item === 'string' ? item : (item?.image_url || item?.images_url || item?.image || item?.url);
+
+      if (!imageUrl || typeof imageUrl !== 'string' || !imageUrl.startsWith('http')) continue;
 
       try {
         const imgRes = await fetch(imageUrl, {
@@ -62,17 +68,19 @@ async function handler(m, { sock }) {
         const arrayBuffer = await imgRes.arrayBuffer();
         const imgBuffer = Buffer.from(arrayBuffer);
 
+        // Validasi file bukan buffer kosong/corrupt
         if (imgBuffer.length > 1000) {
           mediaList.push({ image: imgBuffer });
         }
       } catch (e) {
+        console.error("[Pins Fetch Error]:", e.message);
         continue;
       }
     }
 
     if (mediaList.length === 0) {
       m.react("❌");
-      return m.reply("❌ Gagal memuat gambar dari Pinterest.");
+      return m.reply("❌ Gagal memuat gambar dari Pinterest (Semua link mati atau diblokir).");
     }
 
     try {
@@ -113,8 +121,8 @@ async function handler(m, { sock }) {
           messageId: msg.key.id,
         });
       }
-
       m.react("✅");
+
     } catch (albumErr) {
       console.log("[Pins] Album gagal, kirim satu-satu:", albumErr.message);
 
@@ -139,6 +147,7 @@ async function handler(m, { sock }) {
           { quoted: m }
         );
       }
+      m.react("✅");
     }
   } catch (err) {
     console.error("[Pins] Error:", err.message);
@@ -148,4 +157,4 @@ async function handler(m, { sock }) {
 }
 
 export { pluginConfig as config, handler };
-           
+          
