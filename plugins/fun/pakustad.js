@@ -41,20 +41,19 @@ async function handler(m, { sock }) {
              return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
         }
 
-        // Trik Bypass IP Block: Menggunakan Image Proxy (wsrv.nl)
         const imgUrl = data.results.url;
-        const proxiedUrl = `https://wsrv.nl/?url=${encodeURIComponent(imgUrl)}`;
 
-        // Baileys akan menarik gambar lewat jalur proxy yang aman
+        // Kirim langsung URL gambar ke Baileys, tanpa proxy tambahan
         await sock.sendMessage(m.chat, { 
-            image: { url: proxiedUrl }, 
+            image: { url: imgUrl }, 
             caption: text 
         }, { quoted: m });
         
         m.react('✅')
         
     } catch (err) {
-        console.error("Error di plugin pakustad:", err);
+        const reason = err?.message || err?.toString() || 'Unknown error'
+        console.error(`Error di plugin pakustad: ${reason}`, err);
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
     }
