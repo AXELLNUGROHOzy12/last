@@ -41,29 +41,13 @@ async function handler(m, { sock }) {
              return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
         }
 
+        // Trik Bypass IP Block: Menggunakan Image Proxy (wsrv.nl)
         const imgUrl = data.results.url;
+        const proxiedUrl = `https://wsrv.nl/?url=${encodeURIComponent(imgUrl)}`;
 
-        // FIX ULTIMATE: Gunakan native fetch bawaan Node.js + Header lengkap 
-        // Ini ampuh menembus Cloudflare/WAF yang memblokir Axios
-        const response = await fetch(imgUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                'Referer': 'https://api.cuki.biz.id/'
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`Fetch gagal dengan status: ${response.status}`);
-        }
-
-        // Convert response stream menjadi Buffer agar bisa dikirim oleh Baileys
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
-        // Kirim buffer gambar
+        // Baileys akan menarik gambar lewat jalur proxy yang aman
         await sock.sendMessage(m.chat, { 
-            image: buffer, 
+            image: { url: proxiedUrl }, 
             caption: text 
         }, { quoted: m });
         
