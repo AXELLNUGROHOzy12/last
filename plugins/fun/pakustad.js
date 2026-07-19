@@ -1,6 +1,6 @@
-import axios from 'axios'
 import { f } from '../../src/lib/ourin-http.js'
 import te from '../../src/lib/ourin-error.js'
+
 const pluginConfig = {
     name: ['pakustad', 'pak-ustad', 'tanyaustad'],
     alias: [],
@@ -32,36 +32,21 @@ async function handler(m, { sock }) {
     
     try {
         const apiUrl = `https://api.cuki.biz.id/api/canvas/ustadz?apikey=cuki-x&text=${encodeURIComponent(text)}`
-        const data = await f(apiUrl)
-        const results = data?.results
-
-        if (!results || !results.url) {
-            throw new Error(`Respons API tidak valid / tidak ada results.url: ${JSON.stringify(data)}`)
+        const res = await f(apiUrl)
+        
+        // Pengaman anti-crash kalau API lagi down atau error
+        if (!res || !res.results?.url) {
+             m.react('☢')
+             return m.reply('Maaf, server API-nya lagi gangguan nih.')
         }
 
-        // Sebelumnya URL gambar langsung dilempar ke sock.sendMedia, jadi
-        // Baileys yang fetch sendiri di-belakang layar — dan itu kena 403
-        // dari server file api.cuki.biz.id (kemungkinan butuh User-Agent
-        // browser / nolak request tanpa header yang wajar). Solusinya kita
-        // download sendiri dulu pakai header yang sama kayak plugin lain,
-        // baru kirim hasilnya sebagai buffer.
-        const imgRes = await axios.get(results.url, {
-            responseType: 'arraybuffer',
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
-            timeout: 20000
-        })
-        const imgBuffer = Buffer.from(imgRes.data)
-
-        await sock.sendMedia(m.chat, imgBuffer, text, m, {
+        await sock.sendMedia(m.chat, res.results.url, text, m, {
             type: 'image'
         })
         
         m.react('✅')
         
     } catch (err) {
-        // Sebelumnya error di sini gak pernah di-log sama sekali, jadi kalau
-        // plugin ini gagal, gak ada jejak di log buat debug. Sekarang dicatat.
-        console.error('[pakustad error]:', err)
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
     }
