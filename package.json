@@ -22,6 +22,9 @@
     "soundcloud-scraper": "^5.0.3",
     "axios": "^1.7.9",
     "cheerio": "^1.0.0",
-    "moment-timezone": "^0.5.46"
+    "moment-timezone": "^0.5.46",
+    "@napi-rs/canvas": "^0.1.68",
+    "skia-canvas": "^1.0.2",
+    "node-upload-images": "^1.0.2"
   }
 }

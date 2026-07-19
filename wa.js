@@ -107,12 +107,15 @@ function extractMessageText(message) {
          message.imageMessage?.caption || message.videoMessage?.caption || ''
 }
 
+const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage']
+
 // Bikin objek "m" ala framework bot penuh (reply/react/quoted/args) dari pesan
 // mentah Baileys, buat plugin yang formatnya beda dari bawaan Nova AI
 // (yang cuma pakai (msg, sock, args) polos).
 function buildCompatM(msg, sock, args, text, prefix, command) {
   const chat = msg.key.remoteJid
   const ctx = msg.message?.extendedTextMessage?.contextInfo
+  const mtype = msg.message ? Object.keys(msg.message)[0] : null
 
   let quoted = null
   if (ctx?.quotedMessage) {
@@ -125,6 +128,8 @@ function buildCompatM(msg, sock, args, text, prefix, command) {
     }
     const docMsg = qMessage.documentMessage
     quoted = {
+      key: qKey,
+      message: qMessage,
       text: extractMessageText(qMessage),
       body: extractMessageText(qMessage),
       mimetype: docMsg?.mimetype || qMessage.imageMessage?.mimetype || qMessage.videoMessage?.mimetype || null,
@@ -143,7 +148,13 @@ function buildCompatM(msg, sock, args, text, prefix, command) {
     command,
     args,
     text,
+    fullArgs: text,   // alias — beberapa plugin pakai nama m.fullArgs, isinya sama kayak text
+    messageTimestamp: msg.messageTimestamp,
+    mtype,
+    type: mtype,
+    isMedia: MEDIA_TYPES.includes(mtype),
     quoted,
+    download: async () => downloadMediaMessage({ key: msg.key, message: msg.message }, 'buffer', {}),
     reply: async (str, opts = {}) => sock.sendMessage(chat, { text: str, ...opts }, { quoted: msg }),
     react: async (emoji) => sock.sendMessage(chat, { react: { text: emoji, key: msg.key } }),
   }
