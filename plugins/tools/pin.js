@@ -2,15 +2,14 @@ import {
   generateWAMessage,
   generateWAMessageFromContent,
   jidNormalizedUser,
-} from "@whiskeysockets/baileys"; // FIX: Import dari Baileys langsung
+} from "@whiskeysockets/baileys";
 import crypto from "crypto";
 import te from "../../src/lib/ourin-error.js";
 import { f } from "../../src/lib/ourin-http.js";
-import { AIRich } from "../../src/lib/ourin-builder.js";
 
 const pluginConfig = {
-  name: ["pin"],
-  alias: ["pinsearch", "pinterestsearch", "pins"],
+  name: ["pin", "pinsearch", "pinterestsearch", "pins"],
+  alias: [],
   category: "tools",
   description: "Cari gambar di Pinterest (album)",
   usage: ".pin <query>",
@@ -36,11 +35,9 @@ async function handler(m, { sock }) {
   m.react("🕕");
 
   try {
-    // FIX: Menggunakan API Publik alternatif yang aman dari blokiran WAF Cloudflare
     const apiUrl = `https://api.siputzx.my.id/api/s/pinterest?query=${encodeURIComponent(query)}`;
     const data = await f(apiUrl);
 
-    // Menyesuaikan dengan format response API baru
     const results = data?.data?.slice(0, 10);
     if (!results || results.length === 0) {
       m.react("❌");
@@ -53,7 +50,6 @@ async function handler(m, { sock }) {
       if (!imageUrl) continue;
 
       try {
-        // FIX: Menggunakan Native Fetch + Fake User-Agent agar tidak diblokir
         const imgRes = await fetch(imageUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -122,7 +118,6 @@ async function handler(m, { sock }) {
     } catch (albumErr) {
       console.log("[Pins] Album gagal, kirim satu-satu:", albumErr.message);
 
-      // FIX: Amankan fallback config agar tidak memicu ReferenceError
       const saluranId = global.config?.saluran?.id || "120363400911374213@newsletter";
       const saluranName = global.config?.saluran?.name || global.config?.bot?.name || "Ourin-AI";
 
@@ -145,7 +140,6 @@ async function handler(m, { sock }) {
         );
       }
     }
-    m.react("✅");
   } catch (err) {
     console.error("[Pins] Error:", err.message);
     m.react("☢");
@@ -154,3 +148,4 @@ async function handler(m, { sock }) {
 }
 
 export { pluginConfig as config, handler };
+           
