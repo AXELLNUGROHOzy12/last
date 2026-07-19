@@ -1,5 +1,6 @@
 import { f } from '../../src/lib/ourin-http.js'
 import te from '../../src/lib/ourin-error.js'
+import axios from 'axios' // WAJIB ditambahkan untuk download manual
 
 const pluginConfig = {
     name: ['pakustad', 'pak-ustad', 'tanyaustad'],
@@ -34,7 +35,6 @@ async function handler(m, { sock }) {
         const apiUrl = `https://api.cuki.biz.id/api/canvas/ustadz?apikey=cuki-x&text=${encodeURIComponent(text)}`
         const res = await f(apiUrl)
         
-        // Amankan data JSON (antisipasi jika wrapper f() mereturn object axios)
         const data = res.data ? res.data : res;
         
         if (!data || !data.results || !data.results.url) {
@@ -42,17 +42,25 @@ async function handler(m, { sock }) {
              return m.reply('Maaf, respons API tidak sesuai atau sedang error.')
         }
 
-        // FIX UTAMA: Ubah paksa http:// menjadi https:// agar diizinkan oleh sistem bot
         const secureUrl = data.results.url.replace(/^http:\/\//i, 'https://');
 
-        await sock.sendMedia(m.chat, secureUrl, text, m, {
-            type: 'image'
-        })
+        // FIX: Download gambar manual pakai Axios + fake User-Agent buat nembus 403 Forbidden
+        const imgRes = await axios.get(secureUrl, {
+            responseType: 'arraybuffer',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        // Kirim buffer gambar langsung menggunakan sock.sendMessage standar Baileys
+        await sock.sendMessage(m.chat, { 
+            image: imgRes.data, 
+            caption: text 
+        }, { quoted: m });
         
         m.react('✅')
         
     } catch (err) {
-        // Log error ke terminal agar penyebabnya terlihat jelas
         console.error("Error di plugin pakustad:", err);
         m.react('☢')
         return m.reply(te(m.prefix, m.command, m.pushName))
