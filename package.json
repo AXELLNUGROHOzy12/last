@@ -20,6 +20,8 @@
     "qrcode": "^1.5.4",
     "wa-sticker-formatter": "^4.4.4",
     "soundcloud-scraper": "^5.0.3",
+    "awesome-phonenumber": "^7.7.0",
+    "node-fetch": "^2.7.0"
     "axios": "^1.7.9",
     "cheerio": "^1.0.0",
     "moment-timezone": "^0.5.46",
