@@ -112,14 +112,10 @@ const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMe
 // Bikin objek "m" ala framework bot penuh (reply/react/quoted/args) dari pesan
 // mentah Baileys, buat plugin yang formatnya beda dari bawaan Nova AI
 // (yang cuma pakai (msg, sock, args) polos).
-function buildCompatM(msg, sock, args, text, prefix, command, rawText) {
+function buildCompatM(msg, sock, args, text, prefix, command) {
   const chat = msg.key.remoteJid
   const ctx = msg.message?.extendedTextMessage?.contextInfo
   const mtype = msg.message ? Object.keys(msg.message)[0] : null
-  const senderRaw = msg.key.participant || msg.key.remoteJid || ''
-  const isOwner = msg.key.fromMe ||
-                  senderRaw.includes('628772703519') ||
-                  senderRaw.includes('264643620647015')
 
   let quoted = null
   if (ctx?.quotedMessage) {
@@ -134,6 +130,7 @@ function buildCompatM(msg, sock, args, text, prefix, command, rawText) {
     quoted = {
       key: qKey,
       message: qMessage,
+      sender: ctx.participant || chat,
       text: extractMessageText(qMessage),
       body: extractMessageText(qMessage),
       mimetype: docMsg?.mimetype || qMessage.imageMessage?.mimetype || qMessage.videoMessage?.mimetype || null,
@@ -152,15 +149,12 @@ function buildCompatM(msg, sock, args, text, prefix, command, rawText) {
     command,
     args,
     text,
-    body: rawText ?? text,   // alias — plugin gaya Ourin-MD pakai m.body buat teks lengkap pesan
     fullArgs: text,   // alias — beberapa plugin pakai nama m.fullArgs, isinya sama kayak text
     messageTimestamp: msg.messageTimestamp,
     mtype,
     type: mtype,
     isMedia: MEDIA_TYPES.includes(mtype),
-    isGroup: chat.endsWith('@g.us'),
-    isOwner,
-    isPremium: isOwner,   // belum ada sistem premium terpisah — owner dianggap premium
+    mentionedJid: ctx?.mentionedJid || [],
     quoted,
     download: async () => downloadMediaMessage({ key: msg.key, message: msg.message }, 'buffer', {}),
     reply: async (str, opts = {}) => sock.sendMessage(chat, { text: str, ...opts }, { quoted: msg }),
@@ -178,7 +172,7 @@ function wrapNewFormatPlugin(handler) {
     const prefixChar = /^[\/.#]/.test(rawText.trim()) ? rawText.trim()[0] : '/'
     const restArgs = args.slice(1)
     const text = restArgs.join(' ')
-    const m = buildCompatM(msg, sock, restArgs, text, prefixChar, command, rawText.trim())
+    const m = buildCompatM(msg, sock, restArgs, text, prefixChar, command)
     await handler(m, { sock, text, args: restArgs })
   }
 }
@@ -239,6 +233,13 @@ async function connectToWhatsApp() {
     printQRInTerminal: true,
     browser: ['Nova AI', 'Chrome', '125.0.0']
   })
+
+  sock.getName = async (jid) => {
+    if (!jid) return null
+    const botId = sock.user?.id?.split(':')[0] + '@s.whatsapp.net'
+    if (jid === botId) return sock.user?.name || sock.user?.verifiedName || null
+    return null
+  }
 
   // Shim buat plugin gaya Ourin-MD yang manggil sock.sendMedia(jid, buffer|url, caption, quotedM, {type})
   // — bukan bawaan Baileys, sock.sendMessage biasa cuma nerima {image:{url}} atau {image: Buffer}.
