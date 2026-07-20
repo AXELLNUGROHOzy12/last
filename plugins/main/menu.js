@@ -43,6 +43,7 @@ const MENU_SECTIONS = [
     title: '🤖 AI',
     items: [
       ['text2img2', 't2i2 | genimg', 'Generate gambar dari teks'],
+      ['dpsteai', 'dpste | dipasteai', 'Chat AI dipastebin (session per-user)'],
     ],
   },
   {

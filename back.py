@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.request
 import urllib.error
 import urllib.parse
+import random
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR bisa diarahkan ke Railway Volume (mis. /data) supaya config,
@@ -36,7 +37,121 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 CHATGPT_MODEL = "gpt-4o-mini"
 CHATGPT_API_BASE = "https://api.openai.com/v1/chat/completions"
 
-BUILTIN_AI = ["gemini", "chatgpt"]
+BUILTIN_AI = ["gemini", "chatgpt", "dpsteai"]
+
+# ── DPSTE AI (dipastebin.web.id) — punya session per-user sendiri ──
+DPSTE_HOST = "dipastebin.web.id"
+DPSTE_SESSION_FILE = os.path.join(DATA_DIR, "dpsteai_sessions.json")
+_dpste_lock = threading.Lock()
+
+def _dpste_load_sessions():
+    try:
+        with open(DPSTE_SESSION_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _dpste_save_sessions(data):
+    try:
+        with open(DPSTE_SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[DPSTE AI] Gagal menyimpan sesi: {e}")
+
+_DPSTE_UA = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+_DPSTE_IP_RANGES = [1, 2, 5, 23, 27, 31, 36, 37, 39, 42, 46, 49, 50, 60,
+                     114, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 180, 182, 183]
+
+def _dpste_random_ip():
+    first = random.choice(_DPSTE_IP_RANGES)
+    return f"{first}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+
+def _dpste_headers():
+    ip = _dpste_random_ip()
+    return {
+        "User-Agent": random.choice(_DPSTE_UA),
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": f"https://{DPSTE_HOST}",
+        "Referer": f"https://{DPSTE_HOST}/",
+        "X-Forwarded-For": ip,
+        "X-Real-IP": ip,
+        "Client-IP": ip,
+        "True-Client-IP": ip,
+        "X-Originating-IP": ip,
+        "X-Cluster-Client-IP": ip,
+        "Forwarded": f"for={ip}",
+    }
+
+def _dpste_gen_session_id():
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    return "dpste_ai_" + "".join(random.choice(chars) for _ in range(22))
+
+def _dpste_post(pathname, body):
+    payload = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"https://{DPSTE_HOST}{pathname}", data=payload, method="POST", headers=_dpste_headers()
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = resp.read().decode("utf-8", errors="ignore")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+# ── DPSTE AI ────────────────────────────────────────────
+def call_dpsteai(messages, cfg, session_id):
+    """Session dpsteai itu per-orang, terpisah dari history chat_sessions
+    Nova sendiri — dipetakan lewat session_id yang sama biar tiap
+    user/percakapan tetap punya ingatan sendiri-sendiri di sisi dpsteai."""
+    last_user = next((m["text"] for m in reversed(messages) if m["role"] == "user"), "")
+    if not last_user:
+        return None, "Tidak ada pesan untuk dikirim ke dpsteai."
+
+    with _dpste_lock:
+        sessions = _dpste_load_sessions()
+        dpste_id = sessions.get(session_id) or _dpste_gen_session_id()
+
+    try:
+        result = _dpste_post("/api/ai/chat", {
+            "message": last_user,
+            "sessionId": dpste_id,
+            "clientUser": None,
+        })
+    except urllib.error.HTTPError as e:
+        return None, f"DPSTE AI error {e.code}: {e.read().decode()[:200]}"
+    except Exception as e:
+        return None, str(e)
+
+    if not result.get("success") and not result.get("reply"):
+        return None, result.get("error") or result.get("raw") or "Tidak ada balasan dari dpsteai."
+
+    active_id = result.get("sessionId") or dpste_id
+    with _dpste_lock:
+        sessions = _dpste_load_sessions()
+        if sessions.get(session_id) != active_id:
+            sessions[session_id] = active_id
+            _dpste_save_sessions(sessions)
+
+    return result.get("reply"), None
+
+def dpsteai_reset_session(session_id):
+    """Hapus sesi dpsteai punya satu user/session_id (dipanggil dari fitur reset kalau dibutuhkan)."""
+    with _dpste_lock:
+        sessions = _dpste_load_sessions()
+        dpste_id = sessions.pop(session_id, None)
+        if dpste_id:
+            _dpste_save_sessions(sessions)
+    if dpste_id:
+        try:
+            _dpste_post("/api/ai/clear", {"sessionId": dpste_id})
+        except Exception:
+            pass
+    return dpste_id is not None
 
 def get_all_providers(cfg):
     """Built-in + semua custom endpoint yang udah ditambahkan."""
@@ -367,11 +482,13 @@ def call_custom(messages, cfg, name):
         return None, str(e)
 
 # ── Router ───────────────────────────────────────────────
-def call_ai(messages, cfg, provider="gemini"):
+def call_ai(messages, cfg, provider="gemini", session_id="default"):
     if provider == "chatgpt":
         return call_chatgpt(messages, cfg)
     if provider == "gemini":
         return call_gemini(messages, cfg)
+    if provider == "dpsteai":
+        return call_dpsteai(messages, cfg, session_id)
     # Custom endpoint
     return call_custom(messages, cfg, provider)
 
@@ -601,14 +718,14 @@ class Handler(BaseHTTPRequestHandler):
                 # Kalau global_ai aktif, session_ai tidak berpengaruh — beri tahu user
                 if global_ai:
                     self._set_headers(200)
-                    labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)"}
+                    labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)", "dpsteai": "DPSTE AI"}
                     label = labels.get(global_ai, global_ai)
                     self.wfile.write(json.dumps({
                         "reply": f"⚠️ AI global sedang aktif: *{label}*. Hanya owner yang bisa mengganti."
                     }).encode())
                     return
                 session_ai[session_id] = provider
-                labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)"}
+                labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)", "dpsteai": "DPSTE AI"}
                 label = labels.get(provider, provider)
                 self._set_headers(200)
                 self.wfile.write(json.dumps({"reply": f"🤖 AI diganti ke {label}!"}).encode())
@@ -712,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
             history.append({"role": "user", "text": msg})
 
             _t0 = time.time()
-            reply, err = call_ai(history, config, provider)
+            reply, err = call_ai(history, config, provider, session_id)
             latency_ms = (time.time() - _t0) * 1000
             if err:
                 history.pop()
@@ -766,7 +883,7 @@ class Handler(BaseHTTPRequestHandler):
             global_ai = provider
             config["global_ai"] = provider
             save_config(config)
-            labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)"}
+            labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)", "dpsteai": "DPSTE AI"}
             label  = labels.get(provider, provider)
             self._set_headers(200)
             self.wfile.write(json.dumps({
@@ -797,7 +914,7 @@ class Handler(BaseHTTPRequestHandler):
                 }).encode())
                 return
             global_ai = provider
-            labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)"}
+            labels = {"gemini": "Gemini 2.5 Flash", "chatgpt": "ChatGPT (GPT-4o mini)", "dpsteai": "DPSTE AI"}
             label = labels.get(provider, provider)
             self._set_headers(200)
             self.wfile.write(json.dumps({
